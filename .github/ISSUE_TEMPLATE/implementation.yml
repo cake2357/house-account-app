@@ -1,0 +1,46 @@
+name: 実装要件
+description: 実装したい内容、対応方針、完了条件を整理します。
+title: "[実装] "
+body:
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 背景・目的
+      description: 誰のどのような困りごとを解決するか、実装が必要な理由を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: 想定する実装内容
+      description: 何を実装し、どのように動作する想定かを記載してください。入力・操作と期待する結果を具体的に示してください。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲・対象外
+      description: 今回対応する範囲と、今回の作業に含めない内容を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: 対応方針
+      description: 実現方法、主な作業、必要な依存関係を記載してください。未確定事項があれば、その確認方法も示してください。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 完了条件・確認方法
+      description: 何を確認できれば要件を満たすか、具体的に記載してください。
+      placeholder: |
+        - [ ] ...の操作で...となることを確認する
+    validations:
+      required: true
+  - type: textarea
+    id: related-links
+    attributes:
+      label: 関連Issue・PR・資料（任意）
+      description: 関連する要件、設計資料、画面イメージなどへのリンクを記載してください。

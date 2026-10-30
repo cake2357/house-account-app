@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+
+# Tool caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+test-results/
+
+# Local settings and OS files
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Experiment outputs
+/artifacts/
+/logs/
+
+# Keep the data directory structure without committing datasets
+/data/**
+!/data/**/
+!/data/**/.gitkeep

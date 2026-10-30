@@ -1,0 +1,10 @@
+{
+"recommendations": [
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "ms-python.mypy-type-checker",
+    "eamodio.gitlens",
+    "mechatroner.rainbow-csv",
+    "oderwat.indent-rainbow"
+    ]
+}

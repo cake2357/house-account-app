@@ -1,0 +1,55 @@
+name: 作業中の課題
+description: 作業中に生じた問題、障害、判断が必要な事項を整理します。
+title: "[課題] "
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 課題の概要・発生状況
+      description: 何の作業中に、何が起きたか、期待する状態と影響を記載してください。
+    validations:
+      required: true
+  - type: dropdown
+    id: response-status
+    attributes:
+      label: 対応可否・判断の要否
+      description: 現時点の状況を選択してください。調査後に変わった場合は更新してください。
+      options:
+        - 対応可能（ユーザーの判断は不要）
+        - ユーザーの判断が必要
+        - 調査が必要（対応可否は未確定）
+    validations:
+      required: true
+  - type: textarea
+    id: blocker
+    attributes:
+      label: ネック・判断が必要な点
+      description: 障害となる制約、原因、未確定事項を記載してください。判断が必要な場合は選択肢・影響・推奨案も示してください。
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: 対応方針
+      description: 対応内容と進め方を記載してください。未確定の場合は調査手順、判断待ちの場合は判断後の進め方を示してください。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 完了条件・確認方法
+      description: 何を確認できれば解決とするか、具体的に記載してください。
+      placeholder: |
+        - [ ] ...ができることを...で確認する
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 再現手順・根拠（該当する場合）
+      description: 不具合の場合は再現手順・環境・ログを記載してください。必要に応じて画像や調査結果を添付してください。
+  - type: textarea
+    id: related-links
+    attributes:
+      label: 関連Issue・PR・資料（任意）
+      description: 課題が発生した作業のIssue・PRや、関連資料へのリンクを記載してください。
