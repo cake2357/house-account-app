@@ -1,7 +1,8 @@
 # 家計簿アプリ MVP実装計画
 
 保存先：`docs/mvp-implementation-plan.md`
-状態：工程0を実装中（2026-10-31）。工程1以降は未実装。
+状態：工程0を実装し、実画像3枚の先行検証済み（2026-10-31）。工程1以降は未実装。
+変更は[PR #5](https://github.com/cake2357/house-account-app/pull/5)でレビューする。
 工程0の結果は[OCR検証記録](ocr-validation.md)、複数店舗での最終評価は
 [Issue #3](https://github.com/cake2357/house-account-app/issues/3)で管理する。
 ユーザー指定により、まず提供された実画像3枚を評価する。
@@ -25,7 +26,7 @@
 
 ## 2. 技術構成とディレクトリ
 
-現在のリポジトリはPython 3.13・uvのテンプレートで、アプリ本体とDBは未実装。新規アプリとして構築する。
+計画時点のリポジトリはPython 3.13・uvのテンプレート。工程0でOCR・候補抽出・評価基盤を追加した。Webアプリ本体とDBは工程1以降で構築する。
 
 - Web：FastAPI、Uvicorn、Jinja2、通常のJavaScriptとCSS。
 - 保存：標準ライブラリの`sqlite3`と番号付きSQLマイグレーション。
