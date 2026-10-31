@@ -1,51 +1,108 @@
-# my-template
+# 家計簿アプリ
 
-Python 3.13 と uv を使う、機械学習アルゴリズム・システム開発用テンプレートです。
-依存管理、Ruff、mypy、GitHub Actions の共通基盤を用意しています。
-学習・評価・推論の処理は、利用するプロジェクトに合わせて追加してください。
+レシートをPC内のPaddleOCRで読み取り、人が商品名を確認して明細ごとに複数タグを
+付けるローカルWebアプリ。現在は工程0（OCR・商品名候補抽出の検証基盤）を実装済み。
+Web画面・SQLite保存・タグ編集は後続工程。
 
-## セットアップ
+## セットアップとOCR検証
 
-[uv をインストール](https://docs.astral.sh/uv/getting-started/installation/)し、
-リポジトリのルートで次を実行してください。
+macOS arm64、Python 3.13、[uv](https://docs.astral.sh/uv/getting-started/installation/)を使う。
+PaddleOCR 3.7.0・PaddlePaddle 3.3.1をuv.lockに固定している。
 
 ```sh
 uv python install
 uv sync --locked
-uv run --locked python main.py
+# 初回のみネットワークが必要。公式モデル2個を事前取得する
+uv run --locked python scripts/prepare_ocr_models.py
+# 合成画像で動作確認（実画像はここで指定したローカルパスへ置き換える）
+uv run --locked python scripts/evaluate_ocr.py recognize \
+  tests/fixtures/synthetic_receipt.png --output artifacts/ocr-evaluation/synthetic.json
 ```
 
-`.python-version` で指定した Python を使い、`.venv/` に仮想環境を作成します。
-`uv sync` は dev 依存もインストールします。以降のコマンドは `uv run` 経由で実行できます。
-CI では uv 0.11.25 と Python 3.13 を使用します。
+モデルは`PP-OCRv5_server_det`と日本語対応の`PP-OCRv5_server_rec`を明示する。
+モデル仕様は[PaddleOCR公式ガイド](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/OCR.html)、
+対応環境は[PaddlePaddle公式資料](https://www.paddlepaddle.org.cn/documentation/docs/en/install/pip/macos-pip_en.html)を参照。
+通常の推論ではモデルの自動取得・接続確認を行わず、ローカルファイルを使用する。
+未準備なら準備コマンドを案内する。外部OCRへ画像を送信しない。
 
-## 開発時のチェック
+モデルの既定保存先は`artifacts/ocr-models/`。
+`HOUSE_ACCOUNT_MODEL_DIR`またはスクリプトの`--model-dir`で変更できる。
+アプリデータの保存先は`HOUSE_ACCOUNT_DATA_DIR`、既定値は`data/app/`。
+既定パスは実行時のカレントディレクトリに依存しない。
+
+評価の出力にはOCR文字列・座標・信頼度・モデル名・依存版・環境・所要時間・候補が入る。
+推論は子プロセスで300秒に制限する。原文を保存してから候補抽出を行い、抽出失敗でも原文を残す。
+出力の上書きは拒否するため、再実行時は別の出力名を指定する。
+推論開始前に出力先を排他的に確保し、同じ出力先への並行実行も拒否する。
+推論中は`status: running`を記録する。処理を強制終了した場合も出力先は残るため、
+記録を確認し、再実行には別の出力名を指定する。集計コマンドも既存の出力を上書きしない。
+
+価格と対応しない行や信頼度0.80未満の行は「要確認」として候補に残す。
+店舗の見出し等が残る場合も人が確認して除外する。商品名を推測したり、タグを自動付与したりしない。
+合計ラベルと金額からなる行全体が一致した場合に、その後の会計欄を除外する。
+先頭位置や数量行との位置関係だけでは見出しと判定せず、不明な行は要確認候補に残す。
+原文はすべて保持する。合計欄の判定も誤る場合があるため、画像との照合が必要。
+
+失敗時は出力JSONの`error_code`を確認する。`ocr_failed`は依存・モデル・入力画像、
+`ocr_timeout`は300秒制限、`extraction_failed`は候補抽出の失敗を表す。
+抽出失敗でも`raw`に原文と座標が残る。モデルが破損している場合は該当するモデルの
+ディレクトリを削除して準備スクリプトを再実行する。実画像と評価記録をバックアップする場合は、
+OCRコマンドの終了後に`data/`と`artifacts/ocr-evaluation/`をまとめてコピーする。
+
+## 実画像の評価
+
+実画像と評価結果は`data/`または`artifacts/`以下へ置く。Gitには含めない。
+各画像に`receipt-01`等の識別子を付けて上記の`recognize`を実行し、結果JSONと画像を照合する。
+レビューJSONを次の形式で作る（名称は正解商品名、候補IDは結果JSONのcandidates配列のID）。
+
+```json
+{
+  "receipts": [
+    {
+      "id": "receipt-01",
+      "store_id": "store-a",
+      "result": "receipt-01.json",
+      "expected_items": [
+        {"name": "牛乳", "candidate_id": "結果JSONの候補ID", "needs_correction": false},
+        {"name": "食パン", "candidate_id": null, "needs_correction": false}
+      ]
+    }
+  ]
+}
+```
+
+`result`はレビューJSONからの相対パス。正解の購入明細をすべて記載し、
+抽出されなかった行には`candidate_id: null`を指定する。1候補を複数行に対応させない。
+文字の誤りがあっても対応する商品行なら対応付け、`needs_correction: true`で別集計する。
+候補に余分な見出しが残っていれば適合率の分母に含める。
+
+```sh
+uv run --locked python scripts/evaluate_ocr.py score \
+  artifacts/ocr-evaluation/review.json --output artifacts/ocr-evaluation/score.json
+```
+
+全画像通算で適合率・再現率80%以上、各画像300秒以内、3店舗以上・5枚以上・
+30正解商品行以上を満たしたときにのみ`accepted: true`となる。
+先行する3枚の評価と、複数店舗での最終評価（[Issue #3](https://github.com/cake2357/house-account-app/issues/3)）を区別する。
+
+## 開発と検証
 
 ```sh
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
-uv run --locked pytest -q
+uv run --locked pytest
+uv build
 ```
 
-自動修正と整形は次のコマンドで行います。
+設定はpyproject.toml、依存版はuv.lock。両方を同時に更新する。
+CIは固定OCR結果で検査し、モデルを取得しない。[テストの詳細](tests/README.md)。
+同梱の.agentsはアプリの品質検査から除外し、app・src・scripts・testsは検査する。
 
-```sh
-uv run --locked ruff check --fix .
-uv run --locked ruff format .
-```
-
-設定は `pyproject.toml` に集約しています。
-
-- Ruff: 基本エラー、未使用コード、import 順序、バグを招きやすい記述、Python 構文を検査します。
-  整形の行長は 100 文字を目安にします。
-- mypy: 関数の型注釈を必須にし、戻り値の `Any` や不要な型エラー抑制などを検査します。
-  型情報が不足する外部ライブラリは、スタブやライブラリ単位の設定で対応してください。
-- `data/`、`notebooks/`、`artifacts/` は両ツールのチェック対象外です。
-
-VS Code は `.venv/` の Python を選択してください。
-推奨拡張機能を入れると、環境内の Ruff・mypy を使い、Python ファイルの保存時に整形と
-修正可能な問題の修正、import の整理を行います。
+app/はWeb層、src/house_account/は業務処理、scripts/は補助コマンド。
+スクリプトは業務処理を呼び出す。今後の工程と受け入れ条件は
+[MVP実装計画](docs/mvp-implementation-plan.md)、実機結果は
+[OCR検証記録](docs/ocr-validation.md)に記載する。
 
 ## PRの自動レビュー・修正
 
@@ -64,57 +121,3 @@ PRブランチ上で、未コミット・未追跡の変更がない状態から
 修正は作業ツリーに残り、commit・push・コメント投稿・mergeは自動化しません。
 VS Codeの「タスクの実行」からも起動できます。
 導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。
-
-## 依存関係の管理
-
-依存の追加には `uv add` を使います。以下は numpy と pytest を指定する例です。
-
-```sh
-uv add numpy
-uv add --dev pytest
-```
-
-依存定義を手動で変更した場合は `uv lock`、特定の依存を更新する場合は
-`uv lock --upgrade-package numpy` のように実行し、`uv sync --locked` で環境に反映してください。
-`pyproject.toml` と `uv.lock` はセットで Git 管理します。`uv.lock` は uv で更新してください。
-
-## ディレクトリ構成
-
-| パス | 用途 |
-| --- | --- |
-| `main.py` | プロジェクト固有の処理を呼び出す実行入口 |
-| `src/` | 再利用する前処理、モデル、評価などのコード |
-| `scripts/` | データ取得などの補助スクリプト |
-| `notebooks/` | 探索、分析、可視化用の Notebook |
-| `data/{train,valid,test}/raw/` | 分割ごとの原データ |
-| `data/{train,valid,test}/intermediate/` | 中間データ |
-| `data/{train,valid,test}/preprocessed/` | 前処理済みデータ |
-| `artifacts/` | 実行時に作成するモデル、設定、指標などの成果物 |
-| `.github/workflows/ci.yml` | Ruff・mypy を実行する CI |
-
-Notebook で繰り返し使う処理は `src/` に移してください。
-Python パッケージとしてインストールする場合は、パッケージ名とビルド設定を定義してください。
-
-### データと成果物
-
-`data/` はディレクトリ構造を保つ `.gitkeep` のみを Git 管理します。
-データの取得元、版、分割方法、前処理手順はプロジェクトごとに記録してください。
-モデルや指標などの実験出力は `artifacts/`、ログは `logs/` に保存してください。
-これらの出力先と `.env` 系のファイルは Git 管理外です。`.env.example` は管理できます。
-
-## 新しいプロジェクトで変更する箇所
-
-1. `pyproject.toml` の `name`、`description`、必要な依存を更新します。
-2. この README のタイトル、プロジェクト概要、実行方法を更新します。
-3. `main.py` に実行処理を記述し、必要に応じて `src/` に分割します。
-4. `.github/copilot-instructions.md` のタイトルとプロジェクト概要を記述します。
-5. `uv lock` と `uv sync --locked` を実行し、開発時のチェックを通します。
-
-Python の基準版を変更する場合は、`.python-version`、`requires-python`、Ruff の
-`target-version`、mypy の `python_version` を合わせて更新してください。
-
-## CI とテスト
-
-push、Pull Request、手動実行で、ロックファイルからの環境構築、Ruff の検査・整形確認、
-mypy の型検査、pytestを実行します。同梱の `.agents/` は品質検査から除外します。
-CIのテストは模擬Codex CLIを使い、AI接続・認証情報は必要ありません。

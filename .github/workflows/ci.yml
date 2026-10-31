@@ -34,5 +34,5 @@ jobs:
       - name: Type check
         run: uv run --locked mypy
 
-      - name: Test
-        run: uv run --locked pytest -q
+      - name: Unit and integration tests
+        run: uv run --locked pytest
