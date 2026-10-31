@@ -9,7 +9,9 @@
   const saveError = document.querySelector("#save-error");
   const ocrMessage = document.querySelector("#ocr-message");
   const candidatePanel = document.querySelector("#candidate-panel");
+  const addCandidatesButton = document.querySelector("#add-candidates");
   let detail;
+  let initialized = false;
   let dirty = false;
   let saving = false;
   let pollTimer = null;
@@ -18,6 +20,15 @@
     dirty = value;
     saveIndicator.textContent = dirty ? "未保存" : "保存済み";
     saveIndicator.classList.toggle("is-dirty", dirty);
+  }
+
+  function updateSavingControls() {
+    const editorDisabled = saving || !initialized;
+    [...document.querySelectorAll(".editor-column input, .editor-column button, .save-bar button")]
+      .forEach((control) => { control.disabled = editorDisabled; });
+    addCandidatesButton.disabled = editorDisabled || !(detail?.last_successful_run?.candidates?.length);
+    document.querySelector("#rerun-ocr").disabled = !initialized;
+    document.querySelector("#delete-receipt").disabled = !initialized;
   }
 
   function updateEmptyState() {
@@ -88,6 +99,7 @@
     area.replaceChildren(
       ...selected.map((tag) =>
         makeChip(tag.name, () => {
+          if (saving) return;
           const checkbox = row.querySelector(`input[value="${CSS.escape(tag.id)}"]`);
           if (checkbox) checkbox.checked = false;
           syncTagIds(row);
@@ -112,6 +124,7 @@
       checkbox.dataset.name = tag.name;
       checkbox.checked = selected.has(tag.id) || checkedFromServer.has(tag.id);
       checkbox.addEventListener("change", () => {
+        if (saving) return;
         syncTagIds(row);
         renderTagChips(row);
         setDirty();
@@ -123,6 +136,7 @@
     });
     syncTagIds(row);
     renderTagChips(row);
+    updateSavingControls();
   }
 
   async function loadTagOptions(row, query = "") {
@@ -234,6 +248,7 @@
       renderTagOptions(row, item.tags);
     }
     list.append(row);
+    updateSavingControls();
     updateEmptyState();
     return row;
   }
@@ -256,7 +271,7 @@
     });
     document.querySelector("#ocr-raw").textContent =
       latestRun?.raw?.raw_text || successRun?.raw?.raw_text || "原文はありません。";
-    document.querySelector("#add-candidates").disabled = candidates.length === 0;
+    addCandidatesButton.disabled = saving || !initialized || candidates.length === 0;
   }
 
   function renderOcrState(run) {
@@ -281,18 +296,32 @@
     renderCandidates(successfulRun, run);
   }
 
+  function setLatestRun(run) {
+    detail.latest_run = run;
+    if (run && ["succeeded", "no_candidates"].includes(run.status)) {
+      detail.last_successful_run = run;
+    }
+    renderOcrState(run);
+  }
+
   async function refreshRun() {
     const run = detail.latest_run;
     if (!run) return;
     const updated = await request(`/api/ocr-runs/${encodeURIComponent(run.id)}`);
-    detail.latest_run = updated;
-    if (["succeeded", "no_candidates"].includes(updated.status)) {
-      detail.last_successful_run = updated;
-    }
-    renderOcrState(updated);
+    setLatestRun(updated);
     if (!["queued", "running"].includes(updated.status)) {
       window.clearInterval(pollTimer);
+      pollTimer = null;
     }
+  }
+
+  function pollRun(run) {
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    if (!["queued", "running"].includes(run?.status)) return;
+    pollTimer = window.setInterval(() => refreshRun().catch(() => {}), 2_000);
   }
 
   function collectItems() {
@@ -306,7 +335,7 @@
   }
 
   async function save(status) {
-    if (saving) return;
+    if (saving || !initialized) return;
     clearItemErrors();
     saveError.textContent = "";
     const inputs = [...list.querySelectorAll("[name=item-name]")];
@@ -325,8 +354,7 @@
     saving = true;
     saveError.textContent = "";
     saveIndicator.textContent = "保存中";
-    [...document.querySelectorAll(".editor-column input, .editor-column button, .save-bar button")]
-      .forEach((control) => { control.disabled = true; });
+    updateSavingControls();
     try {
       const result = await request(`/api/receipts/${encodeURIComponent(receiptId)}/items`, {
         method: "PUT",
@@ -350,13 +378,13 @@
       saveIndicator.textContent = "保存できませんでした";
     } finally {
       saving = false;
-      [...document.querySelectorAll(".editor-column input, .editor-column button, .save-bar button")]
-        .forEach((control) => { control.disabled = false; });
+      updateSavingControls();
       updateEmptyState();
     }
   }
 
-  document.querySelector("#add-candidates").addEventListener("click", () => {
+  addCandidatesButton.addEventListener("click", () => {
+    if (saving || !initialized) return;
     const run = detail.last_successful_run;
     if (!run) return;
     const existing = new Set(
@@ -382,24 +410,20 @@
     }
   });
   addButton.addEventListener("click", () => {
+    if (!initialized) return;
     createItem().querySelector("[name=item-name]").focus();
     setDirty();
   });
   saveDraftButton.addEventListener("click", () => save("draft"));
   saveConfirmedButton.addEventListener("click", () => save("confirmed"));
   document.querySelector("#rerun-ocr").addEventListener("click", async (event) => {
+    if (!initialized) return;
     const button = event.currentTarget;
     button.disabled = true;
     try {
       const result = await request(`/api/receipts/${encodeURIComponent(receiptId)}/ocr-runs`, { method: "POST" });
-      if (result.created) {
-        detail.latest_run = await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`);
-        renderOcrState(detail.latest_run);
-        pollTimer = window.setInterval(() => refreshRun().catch(() => {}), 2_000);
-      } else {
-        detail.latest_run = await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`);
-        renderOcrState(detail.latest_run);
-      }
+      setLatestRun(await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`));
+      pollRun(detail.latest_run);
     } catch (error) {
       ocrMessage.textContent = error.message;
     } finally {
@@ -407,6 +431,7 @@
     }
   });
   document.querySelector("#delete-receipt").addEventListener("click", async (event) => {
+    if (!initialized) return;
     if (!window.confirm("このレシートと明細を削除します。よろしいですか？")) return;
     const button = event.currentTarget;
     button.disabled = true;
@@ -419,12 +444,13 @@
     }
   });
   window.addEventListener("beforeunload", (event) => {
-    if (!dirty || saving) return;
+    if (!dirty) return;
     event.preventDefault();
     event.returnValue = "";
   });
 
   async function initialize() {
+    updateSavingControls();
     detail = await request(`/api/receipts/${encodeURIComponent(receiptId)}`);
     document.querySelector("#receipt-meta").textContent = `${formatDate(detail.created_at)} ・ ${statusLabel(detail.status)}`;
     const imageUrl = `/api/receipts/${encodeURIComponent(receiptId)}/image`;
@@ -434,9 +460,11 @@
     updateEmptyState();
     renderOcrState(detail.latest_run);
     if (detail.latest_run && ["queued", "running"].includes(detail.latest_run.status)) {
-      pollTimer = window.setInterval(() => refreshRun().catch(() => {}), 2_000);
+      pollRun(detail.latest_run);
     }
+    initialized = true;
     setDirty(false);
+    updateSavingControls();
   }
 
   initialize().catch((error) => {

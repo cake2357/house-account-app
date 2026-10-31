@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
 from collections.abc import Generator
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import Page, Route, expect, sync_playwright
 
 from app import create_app
 from house_account.config import Settings
@@ -93,6 +95,20 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
 
         select_tag(page, 0, "食品")
         select_tag(page, 0, "常温")
+        first_row = page.locator(".item-card").nth(0)
+        first_row.locator(".tag-picker summary").click()
+        menu = first_row.locator(".tag-menu")
+        expect(menu).to_be_visible()
+        bounds = first_row.evaluate(
+            """row => {
+              const card = row.getBoundingClientRect();
+              const menu = row.querySelector(".tag-menu").getBoundingClientRect();
+              return { cardLeft: card.left, cardRight: card.right, menuLeft: menu.left, menuRight: menu.right };
+            }"""
+        )
+        assert bounds["menuLeft"] >= bounds["cardLeft"]
+        assert bounds["menuRight"] <= bounds["cardRight"]
+        first_row.locator(".tag-picker summary").click()
         page.get_by_role("button", name="＋ 明細を追加").click()
         page.locator(".item-card").nth(1).get_by_label("商品名").fill("手入力した商品")
         select_tag(page, 1, "手入力")
@@ -118,4 +134,314 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         page.reload()
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).to_contain_text("食品")
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).not_to_contain_text("常温")
+        browser.close()
+
+
+def test_receipt_editing_waits_for_initial_detail_load(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        delayed_detail_requests: list[Route] = []
+
+        def hold_receipt_detail(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                delayed_detail_requests.append(route)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", hold_receipt_detail)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        with page.expect_request(
+            lambda request: request.method == "GET"
+            and urlsplit(request.url).path.startswith("/api/receipts/")
+            and urlsplit(request.url).path.count("/") == 3
+        ):
+            page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.wait_for_timeout(25)
+
+        assert delayed_detail_requests
+        expect(page.locator("#add-item")).to_be_disabled()
+        expect(page.locator("#save-draft")).to_be_disabled()
+        expect(page.locator("#save-confirmed")).to_be_disabled()
+        page.locator("#add-item").evaluate(
+            "button => button.dispatchEvent(new MouseEvent('click', { bubbles: true }))"
+        )
+        expect(page.locator(".item-card")).to_have_count(0)
+        expect(page.locator("#save-indicator")).to_have_text("未保存")
+        assert not page.evaluate(
+            """() => {
+              const event = new Event("beforeunload", { cancelable: true });
+              window.dispatchEvent(event);
+              return event.defaultPrevented;
+            }"""
+        )
+
+        delayed_detail_requests[0].continue_()
+        expect(page.locator("#add-item")).to_be_enabled()
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        expect(page.locator(".item-card")).to_have_count(1)
+        expect(page.locator("#save-indicator")).to_have_text("未保存")
+        browser.close()
+
+
+def test_saving_disables_candidate_addition_and_warns_before_unload(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        add_candidates = page.get_by_role("button", name="候補を明細に追加")
+        expect(add_candidates).to_be_enabled(timeout=5_000)
+        add_candidates.click()
+        expect(page.locator(".item-card")).to_have_count(1)
+
+        page.evaluate(
+            """() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.fetch = async (input, options = {}) => {
+                const url = typeof input === "string" ? input : input.url;
+                if (url.endsWith("/items") && options.method === "PUT") {
+                  return new Promise((resolve) => {
+                    window.__releaseSave = (body) => resolve(new Response(JSON.stringify(body), {
+                      status: 200,
+                      headers: { "Content-Type": "application/json" },
+                    }));
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            }"""
+        )
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("保存中")
+        expect(add_candidates).to_be_disabled()
+        page.evaluate(
+            """() => document.querySelector("#add-candidates").dispatchEvent(
+              new MouseEvent("click", { bubbles: true })
+            )"""
+        )
+        expect(page.locator(".item-card")).to_have_count(1)
+        assert page.evaluate(
+            """() => {
+              const event = new Event("beforeunload", { cancelable: true });
+              window.dispatchEvent(event);
+              return event.defaultPrevented;
+            }"""
+        )
+        page.evaluate(
+            """() => window.__releaseSave({
+              revision: 2,
+              status: "draft",
+              created_at: "2026-01-01T00:00:00+00:00",
+              items: [{ id: "saved-item" }],
+            })"""
+        )
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        browser.close()
+
+
+def test_tag_search_results_remain_disabled_while_saving(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#candidate-list")).to_contain_text("りんご", timeout=5_000)
+        page.get_by_role("button", name="候補を明細に追加").click()
+        select_tag(page, 0, "食品")
+
+        page.evaluate(
+            """() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/tags" && url.searchParams.get("q") === "食品") {
+                  return new Promise((resolve) => {
+                    window.__releaseTagSearch = () => resolve(nativeFetch(input, options));
+                  });
+                }
+                if (url.pathname.endsWith("/items") && options.method === "PUT") {
+                  return new Promise((resolve) => {
+                    window.__releaseSave = (body) => resolve(new Response(JSON.stringify(body), {
+                      status: 200,
+                      headers: { "Content-Type": "application/json" },
+                    }));
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            }"""
+        )
+
+        row = page.locator(".item-card").first
+        picker = row.locator(".tag-picker")
+        if not picker.evaluate("element => element.open"):
+            row.locator(".tag-picker summary").click()
+        row.get_by_label("タグを検索").fill("食品")
+        page.wait_for_function("() => typeof window.__releaseTagSearch === 'function'")
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("保存中")
+
+        page.evaluate("() => window.__releaseTagSearch()")
+        tag_checkbox = row.locator(".tag-option input").first
+        remove_tag = row.get_by_role("button", name="食品を解除")
+        expect(tag_checkbox).to_be_disabled()
+        expect(remove_tag).to_be_disabled()
+        expect(page.locator("#save-indicator")).to_have_text("保存中")
+
+        page.evaluate(
+            """() => window.__releaseSave({
+              revision: 2,
+              status: "draft",
+              created_at: "2026-01-01T00:00:00+00:00",
+              items: [{ id: "saved-item" }],
+            })"""
+        )
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(tag_checkbox).to_be_enabled()
+        browser.close()
+
+
+def test_joining_existing_ocr_run_starts_polling(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#candidate-list")).to_contain_text("りんご", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("読み取り完了", timeout=5_000)
+
+        poll_count = 0
+
+        def return_existing_run(route: Route) -> None:
+            nonlocal poll_count
+            poll_count += 1
+            run = {
+                "id": "shared-run",
+                "status": "queued" if poll_count == 1 else "succeeded",
+                "candidates": []
+                if poll_count == 1
+                else [
+                    {
+                        "id": "shared-candidate",
+                        "name": "別画面で開始された候補",
+                        "needs_review": False,
+                    }
+                ],
+                "raw": None,
+                "error_message": None,
+            }
+            route.fulfill(
+                status=200,
+                body=json.dumps(run, ensure_ascii=False),
+                content_type="application/json",
+            )
+
+        page.route(
+            "**/api/receipts/*/ocr-runs",
+            lambda route: route.fulfill(
+                status=202,
+                body=json.dumps({"created": False, "run_id": "shared-run"}),
+                content_type="application/json",
+            ),
+        )
+        page.route("**/api/ocr-runs/shared-run", return_existing_run)
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="OCRを再実行").click()
+
+        expect(page.locator("#candidate-list")).to_contain_text(
+            "別画面で開始された候補", timeout=7_000
+        )
+        assert poll_count >= 2
+        browser.close()
+
+
+def test_immediately_completed_rerun_becomes_the_addable_candidate_run(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+
+        def hide_existing_runs(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = None
+                detail["last_successful_run"] = None
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", hide_existing_runs)
+        page.route(
+            "**/api/receipts/*/ocr-runs",
+            lambda route: route.fulfill(
+                status=202,
+                body=json.dumps({"created": True, "run_id": "instant-run"}),
+                content_type="application/json",
+            ),
+        )
+        page.route(
+            "**/api/ocr-runs/instant-run",
+            lambda route: route.fulfill(
+                status=200,
+                body=json.dumps(
+                    {
+                        "id": "instant-run",
+                        "status": "succeeded",
+                        "candidates": [
+                            {
+                                "id": "instant-candidate",
+                                "name": "即時完了候補",
+                                "needs_review": False,
+                            }
+                        ],
+                        "raw": None,
+                        "error_message": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                content_type="application/json",
+            ),
+        )
+
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("未実行")
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="OCRを再実行").click()
+
+        expect(page.locator("#candidate-list")).to_contain_text("即時完了候補")
+        add_candidates = page.get_by_role("button", name="候補を明細に追加")
+        expect(add_candidates).to_be_enabled()
+        add_candidates.click()
+        expect(page.locator(".item-card")).to_have_count(1)
+        expect(page.locator(".item-card").first.get_by_label("商品名")).to_have_value(
+            "即時完了候補"
+        )
         browser.close()

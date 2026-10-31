@@ -44,6 +44,7 @@ def _decode_image(content: bytes) -> tuple[Image.Image, str]:
     except (
         UnidentifiedImageError,
         OSError,
+        SyntaxError,
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
     ) as error:

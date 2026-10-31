@@ -33,7 +33,7 @@
         <div id="candidate-panel" class="candidate-panel" hidden>
           <div class="candidate-summary">
             <strong>商品候補 <span id="candidate-count"></span></strong>
-            <button id="add-candidates" class="button button-secondary button-small" type="button">候補を明細に追加</button>
+            <button id="add-candidates" class="button button-secondary button-small" type="button" disabled>候補を明細に追加</button>
           </div>
           <ul id="candidate-list" class="candidate-list"></ul>
         </div>
@@ -46,8 +46,8 @@
             <summary>OCR原文を表示</summary>
             <pre id="ocr-raw" class="raw-text">原文はありません。</pre>
           </details>
-          <button id="rerun-ocr" class="button button-secondary" type="button">OCRを再実行</button>
-          <button id="delete-receipt" class="button button-danger" type="button">レシートを削除</button>
+          <button id="rerun-ocr" class="button button-secondary" type="button" disabled>OCRを再実行</button>
+          <button id="delete-receipt" class="button button-danger" type="button" disabled>レシートを削除</button>
         </div>
       </details>
     </section>
@@ -58,7 +58,7 @@
           <p class="eyebrow">ITEMS</p>
           <h2 id="items-heading">商品明細</h2>
         </div>
-        <button id="add-item" class="button button-secondary button-small" type="button">＋ 明細を追加</button>
+        <button id="add-item" class="button button-secondary button-small" type="button" disabled>＋ 明細を追加</button>
       </div>
       <div id="item-list" class="item-list"></div>
       <p id="items-empty" class="muted items-empty" hidden>明細がありません。商品を手入力できます。</p>
@@ -69,8 +69,8 @@
   <footer class="save-bar">
     <span id="save-error" class="form-message" role="alert"></span>
     <div class="save-actions">
-      <button id="save-draft" class="button button-secondary" type="button">下書き保存</button>
-      <button id="save-confirmed" class="button button-primary" type="button">確認して保存</button>
+      <button id="save-draft" class="button button-secondary" type="button" disabled>下書き保存</button>
+      <button id="save-confirmed" class="button button-primary" type="button" disabled>確認して保存</button>
     </div>
   </footer>
 {% endblock %}

@@ -3,9 +3,10 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
-from house_account.image_store import store_image
+from house_account.image_store import InvalidImageError, store_image
 
 
 def test_transparent_png_is_flattened_on_white_for_ocr(tmp_path: Path) -> None:
@@ -36,3 +37,23 @@ def test_exif_rotation_is_applied_to_separate_ocr_image(tmp_path: Path) -> None:
     assert (tmp_path / "original" / stored.image_name).read_bytes() == content
     with Image.open(tmp_path / "ocr" / stored.ocr_image_name) as ocr_image:
         assert ocr_image.size == (10, 20)
+
+
+def test_png_with_invalid_idat_crc_is_reported_as_invalid_image(tmp_path: Path) -> None:
+    buffer = BytesIO()
+    Image.new("RGB", (2, 2), "white").save(buffer, format="PNG")
+    content = bytearray(buffer.getvalue())
+    offset = 8
+    while offset < len(content):
+        chunk_length = int.from_bytes(content[offset : offset + 4], "big")
+        chunk_type = content[offset + 4 : offset + 8]
+        if chunk_type == b"IDAT":
+            crc_offset = offset + 8 + chunk_length
+            content[crc_offset] ^= 0xFF
+            break
+        offset += 12 + chunk_length
+    else:
+        raise AssertionError("PNGにIDATチャンクがありません")
+
+    with pytest.raises(InvalidImageError, match="破損していないJPEGまたはPNG"):
+        store_image(bytes(content), tmp_path / "original", tmp_path / "ocr")
