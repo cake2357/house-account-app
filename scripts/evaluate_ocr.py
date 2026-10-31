@@ -4,8 +4,7 @@ import argparse
 from pathlib import Path
 
 from house_account.config import Settings
-from house_account.ocr.evaluation import recognize_for_evaluation, score_review
-from house_account.ocr.serialization import write_json
+from house_account.ocr.evaluation import recognize_for_evaluation, score_review_to_file
 
 
 def main() -> None:
@@ -28,9 +27,7 @@ def main() -> None:
                 Settings(settings.data_dir, args.model_dir.resolve()),
             )
         else:
-            if args.output.exists():
-                raise ValueError("出力先が既に存在します。別のファイル名を指定してください。")
-            write_json(args.output, score_review(args.review))
+            score_review_to_file(args.review, args.output)
     except (RuntimeError, ValueError, OSError, KeyError) as error:
         parser.exit(1, f"{error}\n")
     print(f"記録しました: {args.output}")

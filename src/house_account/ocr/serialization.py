@@ -20,6 +20,16 @@ def write_json(path: Path, value: object) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def reserve_output(path: Path) -> None:
+    """出力先を排他的に確保し、後続の原子的な保存による競合を防ぐ。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    except FileExistsError as error:
+        raise ValueError("出力先が既に存在します。別のファイル名を指定してください。") from error
+    os.close(descriptor)
+
+
 def result_to_dict(result: OcrResult) -> dict[str, Any]:
     return {**asdict(result), "raw_text": result.raw_text}
 

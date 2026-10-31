@@ -12,14 +12,14 @@ from typing import Any
 from house_account.config import Settings
 from house_account.ocr.extraction import extract_candidates
 from house_account.ocr.models import check_models
-from house_account.ocr.serialization import result_from_dict, write_json
+from house_account.ocr.serialization import reserve_output, result_from_dict, write_json
 
 
 def recognize_for_evaluation(image_path: Path, output: Path, settings: Settings) -> None:
     """原文を先に記録し、抽出の失敗でも失わない。推論は子プロセスで制限する。"""
     check_models(settings.model_dir)
-    if output.exists():
-        raise ValueError("出力先が既に存在します。別のファイル名を指定してください。")
+    reserve_output(output)
+
     started = time.monotonic()
     record: dict[str, Any] = {
         "status": "running",
@@ -31,6 +31,7 @@ def recognize_for_evaluation(image_path: Path, output: Path, settings: Settings)
         },
         "candidates": [],
     }
+    write_json(output, record)
     with tempfile.TemporaryDirectory() as temporary:
         raw_path = Path(temporary) / "raw.json"
         try:
@@ -144,3 +145,9 @@ def score_review(review_path: Path) -> dict[str, Any]:
         and recall >= 0.80
         and all(duration <= 300 for duration in durations),
     }
+
+
+def score_review_to_file(review_path: Path, output_path: Path) -> None:
+    result = score_review(review_path)
+    reserve_output(output_path)
+    write_json(output_path, result)
