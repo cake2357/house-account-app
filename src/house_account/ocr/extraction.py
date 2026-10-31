@@ -95,6 +95,7 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
             or METADATA.fullmatch(text)
             or DATE_OR_PHONE.fullmatch(text)
             or HEADER.fullmatch(text)
+            or PRICE.fullmatch(text)
         ):
             continue
         # 数字で終わる商品名の誤切り取りを避け、区切りか通貨表記を必要とする。

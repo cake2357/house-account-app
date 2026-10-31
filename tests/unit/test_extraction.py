@@ -41,6 +41,8 @@ def test_fixture_groups_coordinates_removes_prices_and_retains_duplicate_items(
         "TEL 03-1234-5678",
         "領収書",
         "¥198",
+        "198円",
+        "198 円",
         "(商品代金 ¥148)",
         "(値引合計 -68)",
         "税率 8%対象 -68",
