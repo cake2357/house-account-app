@@ -125,15 +125,21 @@ app/はWeb層、src/house_account/は業務処理、scripts/は補助コマン�
 チェックアウト済みPRをCodex CLIでレビューし、指摘と検証失敗を最大3回修正します。
 レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
 `codex-review.toml` またはCLI引数で個別に変更できます。
+`--pr` を指定すると、レビュー・修正ごとの結果を対象PRへコメントします。
+PR #17のブランチでコメントを残す場合は、次のように実行します。
 
 ```sh
 codex login status
+gh auth status
+gh pr checkout 17
 git fetch origin main
-uv run --locked python scripts/codex_pr_review_loop.py --dry-run
-uv run --locked python scripts/codex_pr_review_loop.py
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --dry-run
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17
 ```
 
 PRブランチ上で、未コミット・未追跡の変更がない状態から実行してください。
-修正は作業ツリーに残り、commit・push・コメント投稿・mergeは自動化しません。
-VS Codeの「タスクの実行」からも起動できます。
+修正は未コミットで作業ツリーに残り、レビューコメントにもその旨を記載します。
+`--pr` を省略すると、コメントを投稿せずに実行します。
+VS Codeの「タスクの実行」→「PR: Codexレビュー・修正とコメント」からも起動でき、
+コメント先のPR番号を入力できます（初期値は17）。
 導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。

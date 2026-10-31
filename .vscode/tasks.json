@@ -16,6 +16,25 @@
       "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py", "--dry-run"],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
+    },
+    {
+      "label": "PR: Codexレビュー・修正とコメント",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
+        "--pr", "${input:prNumber}"
+      ],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "prNumber",
+      "type": "promptString",
+      "description": "コメント先のPR番号（チェックアウト中のPR）",
+      "default": "17"
     }
   ]
 }

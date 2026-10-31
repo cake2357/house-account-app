@@ -263,8 +263,103 @@ def run_checks(repo: Path, directory: Path, settings: Settings) -> list[dict[str
     return results
 
 
+@dataclass(frozen=True)
+class PRComments:
+    executable: str
+    url: str
+    head: str
+
+    def post(
+        self,
+        repo: Path,
+        directory: Path,
+        *,
+        iteration: int,
+        model: str,
+        answer: dict[str, Any],
+        status: str,
+        checks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        phase = "レビュー" if checks is not None else "修正"
+        lines = [
+            f"## Codex {phase} {iteration}",
+            "",
+            f"- モデル: `{model}`",
+            f"- 開始時のHEAD: `{self.head}`",
+            f"- 結果: {status}",
+            "",
+            "ローカル作業ツリーの結果です。このループによる修正は未コミット・未pushです。",
+            "",
+            "### 要約",
+            "",
+            answer["summary"],
+        ]
+        if answer["needs_human"]:
+            lines += ["", "### 人の判断が必要な理由", "", answer["reason"]]
+        if checks is not None:
+            lines += ["", "### レビュー指摘", ""]
+            for finding in answer["findings"]:
+                lines.append(
+                    f"- **{finding['priority']}** `{finding['file']}:{finding['line']}`: "
+                    f"{finding['message']}"
+                )
+            if not answer["findings"]:
+                lines.append("指摘0件")
+            lines += ["", "### 検証結果", ""]
+            for result in checks:
+                outcome = "成功" if result["returncode"] == 0 else "失敗"
+                lines.append(
+                    f"- {outcome}: `{shlex.join(result['command'])}` "
+                    f"(終了コード {result['returncode']})"
+                )
+        body = directory / "comment.md"
+        body.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        command = [self.executable, "pr", "comment", self.url, "--body-file", str(body)]
+        write_json(directory / "comment-command.json", command)
+        log = directory / "comment.log"
+        if run_process(command, repo, log, 60):
+            raise LoopError(f"PRコメントの投稿に失敗しました。本文: {body} / ログ: {log}")
+
+
+def resolve_pr_comments(repo: Path, number: int, executable: str) -> PRComments:
+    if number < 1:
+        raise LoopError("PR番号は1以上の整数で指定してください")
+    result = subprocess.run(
+        [
+            executable,
+            "pr",
+            "view",
+            str(number),
+            "--json",
+            "url,state,headRefName,headRefOid",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode:
+        raise LoopError(f"対象PRの確認に失敗しました: {result.stderr.strip()}")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or not isinstance(value.get("url"), str) or not value["url"]:
+        raise LoopError("対象PRの情報が不正です")
+    if value.get("state") != "OPEN":
+        raise LoopError("コメント先にはオープン中のPRを指定してください")
+    branch = git(repo, "symbolic-ref", "--short", "HEAD").decode().strip()
+    head = git(repo, "rev-parse", "HEAD").decode().strip()
+    if value.get("headRefName") != branch or value.get("headRefOid") != head:
+        raise LoopError("対象PRのブランチまたはHEADがローカルと一致しません")
+    return PRComments(executable, value["url"], head)
+
+
 def repair_loop(
-    repo: Path, directory: Path, settings: Settings, executable: str, base: str
+    repo: Path,
+    directory: Path,
+    settings: Settings,
+    executable: str,
+    base: str,
+    comments: PRComments | None = None,
 ) -> tuple[str, int, str]:
     head = git(repo, "rev-parse", "HEAD")
     branch = git(repo, "symbolic-ref", "HEAD")
@@ -297,9 +392,27 @@ HEAD同士の差分だけで判定しないでください。変更で生じた�
         assert_git_unchanged(repo, head, branch)
         if snapshot(repo, base) != before:
             raise LoopError("レビュー中にファイルが変更されました")
+        failed = [result for result in checks if result["returncode"] != 0]
+        if comments is not None:
+            if review["needs_human"]:
+                review_status = "人の判断が必要"
+            elif not review["findings"] and not failed:
+                review_status = "指摘0件・すべての検証が成功"
+            elif fixes == settings.max_fixes:
+                review_status = "修正上限に到達（指摘または検証失敗あり）"
+            else:
+                review_status = "指摘または検証失敗あり・修正へ進みます"
+            comments.post(
+                repo,
+                directory / f"review-{fixes:02}",
+                iteration=fixes + 1,
+                model=settings.review_model,
+                answer=review,
+                status=review_status,
+                checks=checks,
+            )
         if review["needs_human"]:
             return "needs_human", fixes, review["reason"]
-        failed = [result for result in checks if result["returncode"] != 0]
         if not review["findings"] and not failed:
             return "success", fixes, "指摘0件、すべての検証が成功しました"
         if fixes == settings.max_fixes:
@@ -326,9 +439,24 @@ HEAD同士の差分だけで判定しないでください。変更で生じた�
             repo, directory / f"fix-{fixes + 1:02}", settings, executable, fix_prompt, False
         )
         assert_git_unchanged(repo, head, branch)
+        after = snapshot(repo, base)
+        if comments is not None:
+            if fix["needs_human"]:
+                fix_status = "人の判断が必要"
+            elif after in seen:
+                fix_status = "停滞（変更がないか、以前の状態に戻りました）"
+            else:
+                fix_status = "修正を実施・次のラウンドで再検証します"
+            comments.post(
+                repo,
+                directory / f"fix-{fixes + 1:02}",
+                iteration=fixes + 1,
+                model=settings.fix_model,
+                answer=fix,
+                status=fix_status,
+            )
         if fix["needs_human"]:
             return "needs_human", fixes + 1, fix["reason"]
-        after = snapshot(repo, base)
         if after in seen:
             return "stalled", fixes + 1, "変更がないか、以前の状態に戻りました"
         seen.add(after)
@@ -340,6 +468,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--repo", type=Path, default=Path.cwd())
     result.add_argument("--config", type=Path, help="TOML設定。既定: 対象repo/codex-review.toml")
     result.add_argument("--base", help="PRのbase ref。開始時にmerge-baseを固定")
+    result.add_argument("--pr", type=int, help="各レビュー・修正結果をコメントするPR番号")
+    result.add_argument("--gh-bin", default="gh", help="GitHub CLI実行ファイルの名前またはパス")
     result.add_argument("--review-model")
     result.add_argument("--fix-model")
     result.add_argument("--max-fixes", type=int, help="0で修正なしのレビュー・検証")
@@ -389,7 +519,15 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 raise LoopError("変更のあるPRブランチへチェックアウトしてください")
             base = git(repo, "merge-base", "HEAD", base_commit).decode().strip()
-            metadata = {"repo": str(repo), "branch": branch, "merge_base": base, **asdict(settings)}
+            metadata = {
+                "repo": str(repo),
+                "branch": branch,
+                "merge_base": base,
+                "pr": args.pr,
+                **asdict(settings),
+            }
+            if args.pr is not None and args.pr < 1:
+                raise LoopError("PR番号は1以上の整数で指定してください")
             if args.dry_run:
                 print(json.dumps(metadata, ensure_ascii=False, indent=2))
                 return 0
@@ -397,7 +535,14 @@ def main(argv: list[str] | None = None) -> int:
             directory = Path(tempfile.mkdtemp(prefix="codex-pr-review-"))
             write_json(directory / "settings.json", metadata)
             print(f"ログ: {directory}", flush=True)
-            status, fixes, message = repair_loop(repo, directory, settings, args.codex_bin, base)
+            comments = None
+            if args.pr is not None:
+                comments = resolve_pr_comments(repo, args.pr, args.gh_bin)
+                write_json(directory / "pull-request.json", asdict(comments))
+                print(f"コメント先: {comments.url}", flush=True)
+            status, fixes, message = repair_loop(
+                repo, directory, settings, args.codex_bin, base, comments
+            )
             write_json(
                 directory / "result.json", {"status": status, "fixes": fixes, "message": message}
             )
