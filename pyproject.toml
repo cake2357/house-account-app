@@ -33,6 +33,7 @@ packages = ["src/house_account", "app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["."]
 addopts = "-ra"
 
 [tool.ruff]

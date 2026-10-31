@@ -103,3 +103,21 @@ app/はWeb層、src/house_account/は業務処理、scripts/は補助コマン�
 スクリプトは業務処理を呼び出す。今後の工程と受け入れ条件は
 [MVP実装計画](docs/mvp-implementation-plan.md)、実機結果は
 [OCR検証記録](docs/ocr-validation.md)に記載する。
+
+## PRの自動レビュー・修正
+
+チェックアウト済みPRをCodex CLIでレビューし、指摘と検証失敗を最大3回修正します。
+レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
+`codex-review.toml` またはCLI引数で個別に変更できます。
+
+```sh
+codex login status
+git fetch origin main
+uv run --locked python scripts/codex_pr_review_loop.py --dry-run
+uv run --locked python scripts/codex_pr_review_loop.py
+```
+
+PRブランチ上で、未コミット・未追跡の変更がない状態から実行してください。
+修正は作業ツリーに残り、commit・push・コメント投稿・mergeは自動化しません。
+VS Codeの「タスクの実行」からも起動できます。
+導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。

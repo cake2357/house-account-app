@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PR: Codexレビュー・修正",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "PR: Codexレビュー設定の確認",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py", "--dry-run"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    }
+  ]
+}
