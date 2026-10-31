@@ -25,6 +25,7 @@ CI では uv 0.11.25 と Python 3.13 を使用します。
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
+uv run --locked pytest -q
 ```
 
 自動修正と整形は次のコマンドで行います。
@@ -45,6 +46,24 @@ uv run --locked ruff format .
 VS Code は `.venv/` の Python を選択してください。
 推奨拡張機能を入れると、環境内の Ruff・mypy を使い、Python ファイルの保存時に整形と
 修正可能な問題の修正、import の整理を行います。
+
+## PRの自動レビュー・修正
+
+チェックアウト済みPRをCodex CLIでレビューし、指摘と検証失敗を最大3回修正します。
+レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
+`codex-review.toml` またはCLI引数で個別に変更できます。
+
+```sh
+codex login status
+git fetch origin main
+uv run --locked python scripts/codex_pr_review_loop.py --dry-run
+uv run --locked python scripts/codex_pr_review_loop.py
+```
+
+PRブランチ上で、未コミット・未追跡の変更がない状態から実行してください。
+修正は作業ツリーに残り、commit・push・コメント投稿・mergeは自動化しません。
+VS Codeの「タスクの実行」からも起動できます。
+導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。
 
 ## 依存関係の管理
 
@@ -97,7 +116,5 @@ Python の基準版を変更する場合は、`.python-version`、`requires-pyth
 ## CI とテスト
 
 push、Pull Request、手動実行で、ロックファイルからの環境構築、Ruff の検査・整形確認、
-mypy の型検査を実行します。
-
-pytest は dev 依存に含めています。最初の機能追加に合わせて `tests/` にテストを作成し、
-`uv run --locked pytest` を CI に追加してください。
+mypy の型検査、pytestを実行します。同梱の `.agents/` は品質検査から除外します。
+CIのテストは模擬Codex CLIを使い、AI接続・認証情報は必要ありません。
