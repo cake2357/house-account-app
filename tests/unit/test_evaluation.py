@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -124,7 +125,10 @@ def test_extraction_failure_preserves_raw_text(
         assert saved["raw"]["raw_text"] == raw["raw_text"]
         raise ValueError("抽出に失敗")
 
-    monkeypatch.setattr("house_account.ocr.evaluation.subprocess.run", recognize)
+    monkeypatch.setattr(
+        "house_account.ocr.evaluation.subprocess",
+        SimpleNamespace(run=recognize, TimeoutExpired=subprocess.TimeoutExpired),
+    )
     monkeypatch.setattr("house_account.ocr.evaluation.extract_candidates", fail_extraction)
     with pytest.raises(ValueError, match="抽出に失敗"):
         recognize_for_evaluation(tmp_path / "unused.png", output, Settings(tmp_path, tmp_path))
