@@ -105,7 +105,7 @@ def test_empty_result_is_successfully_empty() -> None:
     assert extract_candidates(OcrResult((), {}, {})) == ()
 
 
-def test_item_section_keeps_unpriced_products_and_excludes_header_footer_quantity() -> None:
+def test_item_section_keeps_unknown_lines_and_excludes_known_metadata() -> None:
     texts = [
         "架空スーパー",
         "お知らせの説明文",
@@ -122,8 +122,14 @@ def test_item_section_keeps_unpriced_products_and_excludes_header_footer_quantit
         tuple(make_block(text, index * 30) for index, text in enumerate(texts)), {}, {}
     )
     candidates = extract_candidates(result)
-    assert [candidate.name for candidate in candidates] == ["牛乳", "商品名のみ", "合計満足パン"]
-    assert candidates[1].review_reasons == ("price_not_found",)
+    assert [candidate.name for candidate in candidates] == [
+        "架空スーパー",
+        "牛乳",
+        "商品名のみ",
+        "合計満足パン",
+    ]
+    assert candidates[0].review_reasons == ("price_not_found",)
+    assert candidates[2].review_reasons == ("price_not_found",)
     assert "広告文" in result.raw_text
 
 
@@ -136,9 +142,59 @@ def test_first_item_with_quantity_price_on_next_line_is_kept() -> None:
         {},
         {},
     )
-    (candidate,) = extract_candidates(result)
+    header, candidate = extract_candidates(result)
+    assert header.name == "架空店"
+    assert header.review_reasons == ("price_not_found",)
     assert candidate.name == "牛乳"
     assert candidate.needs_review
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected_names", "unpriced_count"),
+    [
+        (["牛乳", "食パン 198", "合計 398"], ["牛乳", "食パン"], 1),
+        (["架空店", "牛乳", "パン 100", "合計 298"], ["架空店", "牛乳", "パン"], 2),
+        (
+            ["架空店", "牛乳", "食パン", "2コ×単100 ¥200", "合計 ¥200"],
+            ["架空店", "牛乳", "食パン"],
+            3,
+        ),
+    ],
+)
+def test_unpriced_leading_lines_are_retained_for_review(
+    texts: list[str], expected_names: list[str], unpriced_count: int
+) -> None:
+    result = OcrResult(
+        tuple(make_block(text, index * 30) for index, text in enumerate(texts)), {}, {}
+    )
+    candidates = extract_candidates(result)
+    assert [candidate.name for candidate in candidates] == expected_names
+    assert all(candidate.needs_review for candidate in candidates[:unpriced_count])
+    assert [candidate.review_reasons for candidate in candidates] == [
+        ("price_not_found",)
+    ] * unpriced_count + [()] * (len(candidates) - unpriced_count)
+
+
+@pytest.mark.parametrize(
+    "total",
+    ["合計 448", "合 計 ４４８円", "小計 ¥448", "総計￥448", "割引前合計 ¥448", "合計: 448"],
+)
+def test_total_requires_a_complete_label_and_amount(total: str) -> None:
+    blocks = (
+        make_block("牛乳 198", 0),
+        make_block("合計", 30),
+        make_block("満足パン", 30, x=140),
+        make_block("100", 30, x=300),
+        make_block("りんご 150", 60),
+        make_block(total, 90),
+        make_block("会計後の説明", 120),
+    )
+    result = OcrResult(blocks, {}, {})
+    candidates = extract_candidates(result)
+    assert [candidate.name for candidate in candidates] == ["牛乳", "合計 満足パン", "りんご"]
+    assert candidates[1].block_indexes == (1, 2, 3)
+    assert all(not candidate.needs_review for candidate in candidates)
+    assert "会計後の説明" in result.raw_text
 
 
 def test_slanted_receipt_pairs_names_and_prices_by_adjusted_coordinates() -> None:

@@ -25,7 +25,7 @@ DATE_OR_PHONE = re.compile(
     re.IGNORECASE,
 )
 HEADER = re.compile(r"(?:お知らせ|広告|キャンペーン).*")
-TOTAL_START = re.compile(r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)(?=$|[\s/:：(（¥￥\d])")
+TOTAL_LINE = re.compile(r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)\s*[:：]?\s*" + PRICE.pattern)
 QUANTITY = re.compile(r"\d+\s*(?:コ|個|点|本|枚)?\s*[×xX]\s*(?:単|@)?\s*[\d,.]+")
 ADJUSTMENT = re.compile(r"[*\s]*(?:[値值]引額|[値值]引|割引額|[値值]引合計)[*\s]*")
 AUXILIARY = re.compile(r"(?:商品代金|[値值]引合計|税率\s*\d+\s*%\s*[対对]象)")
@@ -83,26 +83,10 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
     lines = group_lines(result.blocks)
     raw_lines = [" ".join(result.blocks[i].text.strip() for i in line).strip() for line in lines]
     texts = [unicodedata.normalize("NFKC", text) for text in raw_lines]
-    end = next((index for index, text in enumerate(texts) if TOTAL_START.match(text)), len(lines))
-    start = 0
-    # 合計欄が明確な場合だけ購入明細の範囲を絞る。原文は範囲外も保持する。
-    if end < len(lines):
-        first_priced = next(
-            (
-                index
-                for index, text in enumerate(texts[:end])
-                if split_price(text)[1] and not METADATA.fullmatch(text)
-            ),
-            None,
-        )
-        if first_priced is not None:
-            # 先頭行は店舗名の可能性が高い。それ以降の未価格行は商品か判別できないため候補に残す。
-            start = 1 if first_priced > 0 else 0
-            if QUANTITY.fullmatch(split_price(texts[first_priced])[0]):
-                start = max(1, first_priced - 1)
-        else:
-            end = len(lines)
-    for line_index in range(start, end):
+    end = next(
+        (index for index, text in enumerate(texts) if TOTAL_LINE.fullmatch(text)), len(lines)
+    )
+    for line_index in range(end):
         indexes = lines[line_index]
         raw_text = raw_lines[line_index]
         text = texts[line_index]
