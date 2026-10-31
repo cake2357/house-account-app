@@ -24,6 +24,7 @@ DATE_OR_PHONE = re.compile(
     r"\d{1,2}:\d{2}(?::\d{2})?|(?:TEL\s*[:：]?\s*)?0\d{1,4}[-ー]\d{1,4}[-ー]\d{3,4})",
     re.IGNORECASE,
 )
+HEADER = re.compile(r"(?:お知らせ|広告|キャンペーン).*")
 TOTAL_START = re.compile(r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)(?=$|[\s/:：(（¥￥\d])")
 QUANTITY = re.compile(r"\d+\s*(?:コ|個|点|本|枚)?\s*[×xX]\s*(?:単|@)?\s*[\d,.]+")
 ADJUSTMENT = re.compile(r"[*\s]*(?:[値值]引額|[値值]引|割引額|[値值]引合計)[*\s]*")
@@ -56,6 +57,11 @@ def group_lines(blocks: tuple[OcrBlock, ...]) -> list[list[int]]:
                 slopes.append(slope)
     page_slope = median(slopes) if slopes else 0.0
     positions = [block.center_y - page_slope * block.center_x for block in blocks]
+    adjusted_heights = [
+        max(y - page_slope * x for x, y in block.polygon)
+        - min(y - page_slope * x for x, y in block.polygon)
+        for block in blocks
+    ]
     lines: list[list[int]] = []
     for index in sorted(range(len(blocks)), key=lambda i: (positions[i], blocks[i].left)):
         block = blocks[index]
@@ -63,7 +69,7 @@ def group_lines(blocks: tuple[OcrBlock, ...]) -> list[list[int]]:
             line
             for line in lines
             if abs(positions[index] - positions[line[0]])
-            <= max(1.0, min(block.height, blocks[line[0]].height) * 0.45)
+            <= max(1.0, min(adjusted_heights[index], adjusted_heights[line[0]]) * 0.45)
         ]
         if matching:
             min(matching, key=lambda line: abs(positions[index] - positions[line[0]])).append(index)
@@ -90,16 +96,22 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
             None,
         )
         if first_priced is not None:
-            start = first_priced
+            # 先頭行は店舗名の可能性が高い。それ以降の未価格行は商品か判別できないため候補に残す。
+            start = 1 if first_priced > 0 else 0
             if QUANTITY.fullmatch(split_price(texts[first_priced])[0]):
-                start = max(0, start - 1)
+                start = max(1, first_priced - 1)
         else:
             end = len(lines)
     for line_index in range(start, end):
         indexes = lines[line_index]
         raw_text = raw_lines[line_index]
         text = texts[line_index]
-        if not text or METADATA.fullmatch(text) or DATE_OR_PHONE.fullmatch(text):
+        if (
+            not text
+            or METADATA.fullmatch(text)
+            or DATE_OR_PHONE.fullmatch(text)
+            or HEADER.fullmatch(text)
+        ):
             continue
         # 数字で終わる商品名の誤切り取りを避け、区切りか通貨表記を必要とする。
         name, has_price = split_price(text)
