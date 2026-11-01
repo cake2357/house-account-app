@@ -539,7 +539,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.pr is not None:
                 comments = resolve_pr_comments(repo, args.pr, args.gh_bin)
                 write_json(directory / "pull-request.json", asdict(comments))
+                print("PRコメント: 有効（各レビュー・修正後に投稿します）", flush=True)
                 print(f"コメント先: {comments.url}", flush=True)
+            else:
+                print(
+                    "PRコメント: 無効（ローカルのみ）。"
+                    "投稿するには --pr <PR番号> を指定してください。",
+                    flush=True,
+                )
             status, fixes, message = repair_loop(
                 repo, directory, settings, args.codex_bin, base, comments
             )
@@ -547,6 +554,8 @@ def main(argv: list[str] | None = None) -> int:
                 directory / "result.json", {"status": status, "fixes": fixes, "message": message}
             )
             print(f"{status}: {message}\n変更は未コミットです。ログ: {directory}")
+            if comments is None:
+                print("PRコメントは投稿していません（--pr 未指定）。")
             return 0 if status == "success" else 1
     except KeyboardInterrupt:
         message, status, code = "中断しました。作業ツリーを確認してください", "interrupted", 130

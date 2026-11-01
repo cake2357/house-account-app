@@ -5,7 +5,10 @@
       "label": "PR: Codexレビュー・修正",
       "type": "process",
       "command": "uv",
-      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py"],
+      "args": [
+        "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
+        "--pr", "${input:prNumber}"
+      ],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
     },
@@ -14,6 +17,14 @@
       "type": "process",
       "command": "uv",
       "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py", "--dry-run"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "PR: Codexレビュー・修正（ローカルのみ）",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py"],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
     },
@@ -33,8 +44,7 @@
     {
       "id": "prNumber",
       "type": "promptString",
-      "description": "コメント先のPR番号（チェックアウト中のPR）",
-      "default": "17"
+      "description": "コメント先のPR番号（チェックアウト中のPR）"
     }
   ]
 }

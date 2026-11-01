@@ -411,6 +411,54 @@ def test_pr_comments_follow_review_fix_and_recheck(
     assert (repo / "new.py").exists()
 
 
+@pytest.mark.parametrize("label", ["PR: Codexレビュー・修正", "PR: Codexレビュー・修正とコメント"])
+def test_vscode_review_tasks_post_to_pr(
+    repo: Path,
+    fake_codex: Path,
+    fake_gh: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+) -> None:
+    config = Path(__file__).resolve().parents[2] / ".vscode" / "tasks.json"
+    task = next(task for task in json.loads(config.read_text())["tasks"] if task["label"] == label)
+    task_args = [arg.replace("${input:prNumber}", "123") for arg in task["args"][4:]]
+    assert loop.main(arguments(repo, fake_codex) + task_args + ["--gh-bin", str(fake_gh)]) == 0
+    output = capsys.readouterr().out
+    assert "PRコメント: 有効" in output
+    assert "コメント先: https://github.com/example/repo/pull/123" in output
+    assert output.index("PRコメント: 有効") < output.index("レビュー 1 / 修正済み 0")
+    calls = [json.loads(line) for line in (tmp_path / "gh-calls.jsonl").read_text().splitlines()]
+    assert sum("body" in entry for entry in calls) == 3
+
+
+@pytest.mark.parametrize("use_task", [False, True])
+def test_local_mode_explains_why_no_comments_are_posted(
+    repo: Path,
+    fake_codex: Path,
+    fake_gh: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    use_task: bool,
+) -> None:
+    args = arguments(repo, fake_codex) + ["--gh-bin", str(fake_gh)]
+    if use_task:
+        config = Path(__file__).resolve().parents[2] / ".vscode" / "tasks.json"
+        task = next(
+            task
+            for task in json.loads(config.read_text())["tasks"]
+            if task["label"] == "PR: Codexレビュー・修正（ローカルのみ）"
+        )
+        args += task["args"][4:]
+    assert loop.main(args) == 0
+    output = capsys.readouterr().out
+    assert "PRコメント: 無効（ローカルのみ）" in output
+    assert "--pr <PR番号>" in output
+    assert output.index("PRコメント: 無効") < output.index("レビュー 1 / 修正済み 0")
+    assert "PRコメントは投稿していません" in output
+    assert not (tmp_path / "gh-calls.jsonl").exists()
+
+
 @pytest.mark.parametrize(
     ("scenario", "count", "message"),
     [
