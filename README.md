@@ -126,20 +126,25 @@ app/はWeb層、src/house_account/は業務処理、scripts/は補助コマン�
 レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
 `codex-review.toml` またはCLI引数で個別に変更できます。
 `--pr` を指定すると、レビュー・修正ごとの結果を対象PRへコメントします。
-PR #17のブランチでコメントを残す場合は、次のように実行します。
+`--publish-fixes` を併用すると、指摘0件かつ全検証成功後に修正をcommit・pushします。
+PR #17のブランチで修正を反映する場合は、次のように実行します。
 
 ```sh
 codex login status
 gh auth status
 gh pr checkout 17
 git fetch origin main
-uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --dry-run
-uv run --locked python scripts/codex_pr_review_loop.py --pr 17
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --publish-fixes --dry-run
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --publish-fixes
 ```
 
 PRブランチ上で、未コミット・未追跡の変更がない状態から実行してください。
-修正は未コミットで作業ツリーに残り、レビューコメントにもその旨を記載します。
-`--pr` を省略すると、コメントを投稿せずに実行します。
-VS Codeの「タスクの実行」→「PR: Codexレビュー・修正とコメント」からも起動でき、
-コメント先のPR番号を入力できます（初期値は17）。
+反映したコミットSHAは最終レビューコメントとログに残ります。
+検証失敗や人の判断待ちの場合は自動反映せず、変更を作業ツリーに残します。
+`--pr` のみならコメントを投稿して修正は未コミットで残し、両方省略するとローカルで実行します。
+VS Codeの「タスクの実行」→「PR: Codexレビュー・修正」からも起動でき、
+PR番号を入力します。通常タスクは検証済みの修正をcommit・pushし、結果をコメントします。
+「PR: Codexレビュー・修正とコメント」も同じ動作です。
+投稿せずに実行する場合は「PR: Codexレビュー・修正（ローカルのみ）」を選んでください。
+開始時の「PRコメント: 有効」とコメント先URLで、投稿が有効であることを確認できます。
 導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。
