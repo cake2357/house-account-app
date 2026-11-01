@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import uvicorn
-from playwright.sync_api import Page, Route, expect, sync_playwright
+from playwright.sync_api import Dialog, Page, Route, expect, sync_playwright
 
 from app import create_app
 from house_account.config import Settings
@@ -156,9 +156,11 @@ def test_receipt_editing_waits_for_initial_detail_load(app_url: str, fixture_dir
         page.goto(app_url)
         page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
         with page.expect_request(
-            lambda request: request.method == "GET"
-            and urlsplit(request.url).path.startswith("/api/receipts/")
-            and urlsplit(request.url).path.count("/") == 3
+            lambda request: (
+                request.method == "GET"
+                and urlsplit(request.url).path.startswith("/api/receipts/")
+                and urlsplit(request.url).path.count("/") == 3
+            )
         ):
             page.get_by_role("button", name="登録する").click()
         page.wait_for_url("**/receipts/*", timeout=5_000)
@@ -247,6 +249,29 @@ def test_saving_disables_candidate_addition_and_warns_before_unload(
             })"""
         )
         expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        browser.close()
+
+
+def test_save_network_failure_restores_failure_state_without_field_errors(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.get_by_label("商品名").fill("通信失敗の確認")
+        page.route("**/api/receipts/*/items", lambda route: route.abort())
+
+        page.get_by_role("button", name="下書き保存").click()
+
+        expect(page.locator("#save-indicator")).to_have_text("保存できませんでした")
+        expect(page.locator("#save-error")).not_to_be_empty()
+        expect(page.get_by_role("button", name="下書き保存")).to_be_enabled()
         browser.close()
 
 
@@ -375,6 +400,211 @@ def test_joining_existing_ocr_run_starts_polling(app_url: str, fixture_dir: Path
         browser.close()
 
 
+def test_polling_serializes_requests_for_the_same_ocr_run(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+
+        def expose_running_run(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = {
+                    "id": "serial-run",
+                    "status": "running",
+                    "candidates": [],
+                    "raw": None,
+                    "error_message": None,
+                }
+                detail["last_successful_run"] = None
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", expose_running_run)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__serialPollCount = 0;
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/ocr-runs/serial-run") {
+                  window.__serialPollCount += 1;
+                  if (window.__serialPollCount === 1) {
+                    return new Promise((resolve) => {
+                      window.__releaseFirstSerialPoll = () => resolve(new Response(JSON.stringify({
+                        id: "serial-run",
+                        status: "running",
+                        candidates: [],
+                        raw: null,
+                        error_message: null,
+                      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                    });
+                  }
+                  return new Response(JSON.stringify({
+                    id: "serial-run",
+                    status: "succeeded",
+                    candidates: [{ id: "serial-candidate", name: "直列後の候補", needs_review: false }],
+                    raw: null,
+                    error_message: null,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        page.wait_for_function("() => window.__serialPollCount === 1", timeout=4_000)
+        page.wait_for_timeout(2_100)
+
+        assert page.evaluate("() => window.__serialPollCount") == 1
+        page.evaluate("() => window.__releaseFirstSerialPoll()")
+
+        expect(page.locator("#candidate-list")).to_contain_text("直列後の候補", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("読み取り完了")
+        assert page.evaluate("() => window.__serialPollCount") == 2
+        browser.close()
+
+
+def test_stale_ocr_poll_response_does_not_replace_newer_run(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+
+        def expose_running_run(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = {
+                    "id": "run-A",
+                    "status": "running",
+                    "candidates": [],
+                    "raw": None,
+                    "error_message": None,
+                }
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", expose_running_run)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__runBPollCount = 0;
+              window.__runAStarted = false;
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/ocr-runs/run-A") {
+                  window.__runAStarted = true;
+                  return new Promise((resolve) => {
+                    window.__releaseRunA = () => {
+                      resolve(new Response(JSON.stringify({
+                        id: "run-A",
+                        status: "succeeded",
+                        candidates: [{ id: "candidate-A", name: "古い実行A候補", needs_review: false }],
+                        raw: null,
+                        error_message: null,
+                      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                      window.__runAResponseReleased = true;
+                    };
+                  });
+                }
+                if (url.pathname.endsWith("/ocr-runs") && options.method === "POST") {
+                  return new Response(JSON.stringify({ run_id: "run-B", created: true }), {
+                    status: 202,
+                    headers: { "Content-Type": "application/json" },
+                  });
+                }
+                if (url.pathname === "/api/ocr-runs/run-B") {
+                  window.__runBPollCount += 1;
+                  const succeeded = window.__runBPollCount > 1;
+                  return new Response(JSON.stringify({
+                    id: "run-B",
+                    status: succeeded ? "succeeded" : "running",
+                    candidates: succeeded
+                      ? [{ id: "candidate-B", name: "新しい実行B候補", needs_review: false }]
+                      : [],
+                    raw: null,
+                    error_message: null,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        page.wait_for_function("() => window.__runAStarted === true", timeout=4_000)
+
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="OCRを再実行").click()
+        page.wait_for_function("() => window.__runBPollCount === 1")
+        page.evaluate("() => window.__releaseRunA()")
+        page.wait_for_function("() => window.__runAResponseReleased === true")
+        page.wait_for_timeout(50)
+
+        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        expect(page.locator("#candidate-list")).not_to_contain_text("古い実行A候補")
+        expect(page.locator("#candidate-list")).to_contain_text("新しい実行B候補", timeout=5_000)
+        browser.close()
+
+
+def test_deleting_dirty_receipt_clears_beforeunload_warning(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        dialog_types: list[str] = []
+
+        def handle_dialog(dialog: Dialog) -> None:
+            dialog_types.append(dialog.type)
+            if dialog.type == "confirm":
+                dialog.accept()
+            else:
+                dialog.dismiss()
+
+        page.on("dialog", handle_dialog)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#candidate-list")).to_contain_text("りんご", timeout=5_000)
+        page.get_by_role("button", name="候補を明細に追加").click()
+        expect(page.locator("#save-indicator")).to_have_text("未保存")
+
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="レシートを削除").click()
+        page.wait_for_url(f"{app_url}/", timeout=5_000)
+
+        assert dialog_types == ["confirm"]
+        browser.close()
+
+
 def test_immediately_completed_rerun_becomes_the_addable_candidate_run(
     app_url: str, fixture_dir: Path
 ) -> None:
@@ -444,4 +674,164 @@ def test_immediately_completed_rerun_becomes_the_addable_candidate_run(
         expect(page.locator(".item-card").first.get_by_label("商品名")).to_have_value(
             "即時完了候補"
         )
+        browser.close()
+
+
+def test_old_poll_response_cannot_replace_completed_same_id_rerun(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+
+        def expose_running_run(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = {
+                    "id": "same-run",
+                    "status": "running",
+                    "candidates": [],
+                    "raw": None,
+                    "error_message": None,
+                }
+                detail["last_successful_run"] = None
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", expose_running_run)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__sameRunPollCount = 0;
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/ocr-runs/same-run") {
+                  window.__sameRunPollCount += 1;
+                  if (window.__sameRunPollCount === 1) {
+                    return new Promise((resolve) => {
+                      window.__releaseOldSameRun = () => {
+                        resolve(new Response(JSON.stringify({
+                          id: "same-run",
+                          status: "running",
+                          candidates: [],
+                          raw: null,
+                          error_message: null,
+                        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                        window.__oldSameRunReleased = true;
+                      };
+                    });
+                  }
+                  return new Response(JSON.stringify({
+                    id: "same-run",
+                    status: "succeeded",
+                    candidates: [{ id: "same-candidate", name: "完了済み候補", needs_review: false }],
+                    raw: null,
+                    error_message: null,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                if (url.pathname.endsWith("/ocr-runs") && options.method === "POST") {
+                  return new Response(JSON.stringify({ run_id: "same-run", created: false }), {
+                    status: 202,
+                    headers: { "Content-Type": "application/json" },
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.wait_for_function("() => window.__sameRunPollCount === 1", timeout=4_000)
+
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="OCRを再実行").click()
+        expect(page.locator("#ocr-state")).to_have_text("読み取り完了")
+        page.evaluate("() => window.__releaseOldSameRun()")
+        page.wait_for_function("() => window.__oldSameRunReleased === true")
+
+        expect(page.locator("#ocr-state")).to_have_text("読み取り完了")
+        expect(page.locator("#candidate-list")).to_contain_text("完了済み候補")
+        browser.close()
+
+
+def test_pagination_disables_navigation_until_requested_page_is_rendered(
+    app_url: str,
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__receiptPageRequests = [];
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/receipts" && url.searchParams.has("page")) {
+                  const requestedPage = url.searchParams.get("page");
+                  window.__receiptPageRequests.push(requestedPage);
+                  if (requestedPage === "2") {
+                    return new Promise((resolve) => {
+                      window.__releaseReceiptPageTwo = () => resolve(new Response(JSON.stringify({
+                        items: [{
+                          id: "page-two-receipt",
+                          created_at: "2026-10-31T00:00:00Z",
+                          status: "draft",
+                          ocr_status: "succeeded",
+                        }],
+                        page: 2,
+                        page_size: 20,
+                        total: 21,
+                        has_next: false,
+                      }), { status: 200, headers: { "Content-Type": "application/json" } })));
+                    });
+                  }
+                  return new Response(JSON.stringify({
+                    items: [{
+                      id: "page-one-receipt",
+                      created_at: "2026-10-30T00:00:00Z",
+                      status: "draft",
+                      ocr_status: "succeeded",
+                    }],
+                    page: 1,
+                    page_size: 20,
+                    total: 21,
+                    has_next: true,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        page.goto(app_url)
+        expect(page.locator('[href="/receipts/page-one-receipt"]')).to_be_visible()
+        next_page = page.get_by_role("button", name="次へ")
+        next_page.click()
+        page.wait_for_function("() => window.__receiptPageRequests.length === 2")
+        expect(next_page).to_be_disabled()
+        page.evaluate("document.querySelector('#next-page').dispatchEvent(new Event('click'))")
+        assert page.evaluate("() => window.__receiptPageRequests") == ["1", "2"]
+
+        page.evaluate("() => window.__releaseReceiptPageTwo()")
+        expect(page.locator("#page-indicator")).to_have_text("2ページ")
+        expect(page.locator('[href="/receipts/page-two-receipt"]')).to_be_visible()
+        expect(next_page).to_be_disabled()
+        page.get_by_role("button", name="前へ").click()
+        expect(page.locator("#page-indicator")).to_have_text("1ページ")
+        assert page.evaluate("() => window.__receiptPageRequests") == ["1", "2", "1"]
         browser.close()

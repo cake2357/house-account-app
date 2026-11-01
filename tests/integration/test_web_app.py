@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import struct
 import threading
 import time
+import zlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -144,6 +146,19 @@ def test_manual_tags_revision_conflicts_and_receipt_scoping(
         assert duplicate.status_code == 409
         assert duplicate.json()["error"]["existing_tag"]["id"] == tag.json()["id"]
 
+        normalized_tag = client.post("/api/tags", json={"name": "ﾊﾟﾝ"})
+        assert normalized_tag.status_code == 201
+        assert normalized_tag.json()["name"] == "パン"
+        assert client.get("/api/tags", params={"q": "ﾊﾟﾝ"}).json()["items"] == [
+            normalized_tag.json()
+        ]
+        duplicate_normalized_tag = client.post("/api/tags", json={"name": "パン"})
+        assert duplicate_normalized_tag.status_code == 409
+        assert (
+            duplicate_normalized_tag.json()["error"]["existing_tag"]["id"]
+            == normalized_tag.json()["id"]
+        )
+
         saved = client.put(
             f"/api/receipts/{receipt_id}/items",
             json={
@@ -221,6 +236,24 @@ def test_image_validation_and_uniform_errors(
             files={"file": ("receipt.png", image_bytes + b"0" * (15 * 1024 * 1024), "image/png")},
         )
         assert too_large.status_code == 422
+
+        text_data = b"Comment\x00\x00" + zlib.compress(b"x" * (1024 * 1024 + 1))
+        chunk_type = b"zTXt"
+        crc = zlib.crc32(chunk_type + text_data)
+        text_chunk = (
+            struct.pack(">I", len(text_data))
+            + chunk_type
+            + text_data
+            + struct.pack(">I", crc)
+        )
+        ihdr_end = 8 + 12 + int.from_bytes(image_bytes[8:12], "big")
+        oversized_text = image_bytes[:ihdr_end] + text_chunk + image_bytes[ihdr_end:]
+        invalid_metadata = client.post(
+            "/api/receipts",
+            files={"file": ("receipt.png", oversized_text, "image/png")},
+        )
+        assert invalid_metadata.status_code == 422
+        assert invalid_metadata.json()["error"]["code"] == "invalid_image"
 
         cross_origin = client.post(
             "/api/tags",

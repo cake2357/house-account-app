@@ -355,12 +355,13 @@ class ReceiptService:
         return self.get_receipt(receipt_id)
 
     def list_tags(self, query: str = "") -> list[dict[str, str]]:
+        normalized_query = normalize_tag_name(query)
         with connect(self.database_path) as connection:
-            if query.strip():
+            if normalized_query:
                 tags = connection.execute(
-                    "SELECT id, name FROM tags WHERE name LIKE ? ESCAPE '\\' "
+                    "SELECT id, name FROM tags WHERE normalized_name LIKE ? ESCAPE '\\' "
                     "ORDER BY name COLLATE NOCASE LIMIT 100",
-                    (f"%{self._escape_like(query.strip())}%",),
+                    (f"%{self._escape_like(normalized_query)}%",),
                 ).fetchall()
             else:
                 tags = connection.execute(

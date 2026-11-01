@@ -41,12 +41,15 @@ def _decode_image(content: bytes) -> tuple[Image.Image, str]:
             with Image.open(io.BytesIO(content)) as image:
                 image.load()
                 return ImageOps.exif_transpose(image).copy(), image.format or ""
+    except InvalidImageError:
+        raise
     except (
         UnidentifiedImageError,
         OSError,
         SyntaxError,
         Image.DecompressionBombError,
         Image.DecompressionBombWarning,
+        ValueError,
     ) as error:
         raise InvalidImageError(
             "画像の内容を読み取れません。破損していないJPEGまたはPNGを選択してください。"

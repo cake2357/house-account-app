@@ -4,7 +4,11 @@
   const fileInput = document.querySelector("#receipt-file");
   const uploadStatus = document.querySelector("#upload-status");
   const list = document.querySelector("#receipt-list");
+  const previousButton = document.querySelector("#previous-page");
+  const nextButton = document.querySelector("#next-page");
   let page = 1;
+  let hasNext = false;
+  let loading = false;
 
   function createText(tag, className, value) {
     const element = document.createElement(tag);
@@ -37,23 +41,39 @@
     return link;
   }
 
-  async function loadReceipts() {
-    const result = await request(`/api/receipts?page=${page}`);
-    list.replaceChildren(...result.items.map(receiptCard));
-    document.querySelector("#empty-state").hidden = result.total !== 0;
-    document.querySelector("#receipt-count").textContent = `${result.total}件`;
-    document.querySelector("#page-indicator").textContent = `${result.page}ページ`;
-    document.querySelector("#previous-page").disabled = page <= 1;
-    document.querySelector("#next-page").disabled = !result.has_next;
+  function updatePaginationControls() {
+    previousButton.disabled = loading || page <= 1;
+    nextButton.disabled = loading || !hasNext;
   }
 
-  document.querySelector("#previous-page").addEventListener("click", async () => {
-    page = Math.max(1, page - 1);
-    await loadReceipts();
+  async function loadReceipts(requestedPage) {
+    if (loading) return;
+    loading = true;
+    updatePaginationControls();
+    try {
+      const result = await request(`/api/receipts?page=${requestedPage}`);
+      page = result.page;
+      hasNext = result.has_next;
+      list.replaceChildren(...result.items.map(receiptCard));
+      document.querySelector("#empty-state").hidden = result.total !== 0;
+      document.querySelector("#receipt-count").textContent = `${result.total}件`;
+      document.querySelector("#page-indicator").textContent = `${result.page}ページ`;
+    } finally {
+      loading = false;
+      updatePaginationControls();
+    }
+  }
+
+  function showListError(error) {
+    uploadStatus.textContent = error.message;
+    uploadStatus.classList.add("is-error");
+  }
+
+  previousButton.addEventListener("click", () => {
+    if (!loading && page > 1) loadReceipts(page - 1).catch(showListError);
   });
-  document.querySelector("#next-page").addEventListener("click", async () => {
-    page += 1;
-    await loadReceipts();
+  nextButton.addEventListener("click", () => {
+    if (!loading && hasNext) loadReceipts(page + 1).catch(showListError);
   });
   fileInput.addEventListener("change", () => {
     const file = fileInput.files[0];
@@ -78,8 +98,5 @@
     }
   });
 
-  loadReceipts().catch((error) => {
-    uploadStatus.textContent = error.message;
-    uploadStatus.classList.add("is-error");
-  });
+  loadReceipts(page).catch(showListError);
 })();

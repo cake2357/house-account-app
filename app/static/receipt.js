@@ -15,6 +15,8 @@
   let dirty = false;
   let saving = false;
   let pollTimer = null;
+  let runRevision = 0;
+  const pollingRunIds = new Set();
 
   function setDirty(value = true) {
     dirty = value;
@@ -45,7 +47,7 @@
     });
   }
 
-  function showFieldErrors(fields) {
+  function showFieldErrors(fields = {}) {
     let firstInvalid = null;
     Object.entries(fields).forEach(([field, message]) => {
       const match = field.match(/^items\.(\d+)\.(?:name|tag_ids|id)?$/);
@@ -298,6 +300,7 @@
 
   function setLatestRun(run) {
     detail.latest_run = run;
+    runRevision += 1;
     if (run && ["succeeded", "no_candidates"].includes(run.status)) {
       detail.last_successful_run = run;
     }
@@ -306,12 +309,19 @@
 
   async function refreshRun() {
     const run = detail.latest_run;
-    if (!run) return;
-    const updated = await request(`/api/ocr-runs/${encodeURIComponent(run.id)}`);
-    setLatestRun(updated);
-    if (!["queued", "running"].includes(updated.status)) {
-      window.clearInterval(pollTimer);
-      pollTimer = null;
+    if (!run || pollingRunIds.has(run.id)) return;
+    const revision = runRevision;
+    pollingRunIds.add(run.id);
+    try {
+      const updated = await request(`/api/ocr-runs/${encodeURIComponent(run.id)}`);
+      if (detail.latest_run?.id !== run.id || runRevision !== revision) return;
+      setLatestRun(updated);
+      if (!["queued", "running"].includes(updated.status)) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    } finally {
+      pollingRunIds.delete(run.id);
     }
   }
 
@@ -437,6 +447,7 @@
     button.disabled = true;
     try {
       await request(`/api/receipts/${encodeURIComponent(receiptId)}?revision=${detail.revision}`, { method: "DELETE" });
+      setDirty(false);
       window.location.assign("/");
     } catch (error) {
       saveError.textContent = error.message;
