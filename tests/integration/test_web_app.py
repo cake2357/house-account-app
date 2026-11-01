@@ -241,10 +241,7 @@ def test_image_validation_and_uniform_errors(
         chunk_type = b"zTXt"
         crc = zlib.crc32(chunk_type + text_data)
         text_chunk = (
-            struct.pack(">I", len(text_data))
-            + chunk_type
-            + text_data
-            + struct.pack(">I", crc)
+            struct.pack(">I", len(text_data)) + chunk_type + text_data + struct.pack(">I", crc)
         )
         ihdr_end = 8 + 12 + int.from_bytes(image_bytes[8:12], "big")
         oversized_text = image_bytes[:ihdr_end] + text_chunk + image_bytes[ihdr_end:]
