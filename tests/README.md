@@ -11,9 +11,13 @@ uv run --locked mypy
 uv run --locked pytest
 ```
 
-`testpaths`は`tests/unit`と`tests/integration`。工程0では単体テストを実装し、
-工程1から実SQLiteと一時保存先を使う結合テストを追加する。
-ブラウザテストは工程2から導入し、`tests/browser`を明示して実行する。
+`testpaths`は`tests/unit`と`tests/integration`。実SQLiteと一時保存先を使うAPI結合テストを含む。
+ブラウザテストはChromiumを事前に用意して明示的に実行する。
+
+```sh
+uv run playwright install chromium
+uv run --locked pytest tests/browser
+```
 
 `fixtures/ocr_result.json`は架空の文字列・座標・信頼度・期待商品名を持つ。
 `fixtures/synthetic_receipt.png`は架空の日本語レシート。Arial Unicodeで描画した

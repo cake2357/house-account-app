@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{{ page_title }} | 家計簿</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/common.js" defer></script>
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">レシート帳</a>
+      <span class="local-mark">この端末内に保存</span>
+    </header>
+    <main class="page-shell">
+      {% block content %}{% endblock %}
+    </main>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

@@ -19,7 +19,8 @@ wheels/
 coverage.xml
 htmlcov/
 test-results/
-docs/plans/
+docs/plans/*
+!docs/plans/PLAN.md
 
 # Local settings and OS files
 .env

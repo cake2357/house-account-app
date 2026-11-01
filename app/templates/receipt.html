@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block head %}<script src="/static/receipt.js" defer></script>{% endblock %}
+{% block content %}
+  <a class="back-link" href="/">← 一覧へ戻る</a>
+  <section class="page-heading detail-heading">
+    <div>
+      <p class="eyebrow">RECEIPT DETAIL</p>
+      <h1>商品を確認</h1>
+      <p id="receipt-meta" class="muted"></p>
+    </div>
+    <span id="save-indicator" class="save-indicator" aria-live="polite">未保存</span>
+  </section>
+
+  <div class="detail-layout" data-receipt-id="{{ receipt_id }}">
+    <section class="image-column" aria-label="レシート画像とOCR結果">
+      <details class="image-card" open>
+        <summary>レシート画像</summary>
+        <a id="image-link" class="receipt-image-link" target="_blank" rel="noreferrer">
+          <img id="receipt-image" alt="登録したレシート画像">
+        </a>
+        <p class="image-hint">画像を選ぶと別画面で拡大できます。</p>
+      </details>
+
+      <section class="ocr-card" aria-labelledby="ocr-heading">
+        <div class="ocr-heading-row">
+          <div>
+            <p class="eyebrow">OCR</p>
+            <h2 id="ocr-heading">読み取り結果</h2>
+          </div>
+          <span id="ocr-state" class="state-badge">読み込み中</span>
+        </div>
+        <p id="ocr-message" class="muted" aria-live="polite"></p>
+        <div id="candidate-panel" class="candidate-panel" hidden>
+          <div class="candidate-summary">
+            <strong>商品候補 <span id="candidate-count"></span></strong>
+            <button id="add-candidates" class="button button-secondary button-small" type="button" disabled>候補を明細に追加</button>
+          </div>
+          <ul id="candidate-list" class="candidate-list"></ul>
+        </div>
+      </section>
+
+      <details class="extra-actions">
+        <summary>補助操作</summary>
+        <div class="extra-actions-body">
+          <details class="raw-details">
+            <summary>OCR原文を表示</summary>
+            <pre id="ocr-raw" class="raw-text">原文はありません。</pre>
+          </details>
+          <button id="rerun-ocr" class="button button-secondary" type="button" disabled>OCRを再実行</button>
+          <button id="delete-receipt" class="button button-danger" type="button" disabled>レシートを削除</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="editor-column" aria-labelledby="items-heading">
+      <div class="editor-heading">
+        <div>
+          <p class="eyebrow">ITEMS</p>
+          <h2 id="items-heading">商品明細</h2>
+        </div>
+        <button id="add-item" class="button button-secondary button-small" type="button" disabled>＋ 明細を追加</button>
+      </div>
+      <div id="item-list" class="item-list"></div>
+      <p id="items-empty" class="muted items-empty" hidden>明細がありません。商品を手入力できます。</p>
+      <p class="editor-note">商品名は画像を見ながら確認してください。タグは選んだ明細にだけ付きます。</p>
+    </section>
+  </div>
+
+  <footer class="save-bar">
+    <span id="save-error" class="form-message" role="alert"></span>
+    <div class="save-actions">
+      <button id="save-draft" class="button button-secondary" type="button" disabled>下書き保存</button>
+      <button id="save-confirmed" class="button button-primary" type="button" disabled>確認して保存</button>
+    </div>
+  </footer>
+{% endblock %}

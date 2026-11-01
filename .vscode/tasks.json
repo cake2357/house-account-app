@@ -5,7 +5,10 @@
       "label": "PR: Codexレビュー・修正",
       "type": "process",
       "command": "uv",
-      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py"],
+      "args": [
+        "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
+        "--pr", "${input:prNumber}", "--publish-fixes"
+      ],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
     },
@@ -16,6 +19,32 @@
       "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py", "--dry-run"],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
+    },
+    {
+      "label": "PR: Codexレビュー・修正（ローカルのみ）",
+      "type": "process",
+      "command": "uv",
+      "args": ["run", "--locked", "python", "scripts/codex_pr_review_loop.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "PR: Codexレビュー・修正とコメント",
+      "type": "process",
+      "command": "uv",
+      "args": [
+        "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
+        "--pr", "${input:prNumber}", "--publish-fixes"
+      ],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "prNumber",
+      "type": "promptString",
+      "description": "コメント・修正の反映先PR番号（チェックアウト中のPR）"
     }
   ]
 }

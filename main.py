@@ -1,6 +1,9 @@
+import uvicorn
+
+
 def main() -> None:
-    """プロジェクト固有の処理を呼び出す実行入口。"""
-    print("環境の準備ができました。main.py にプロジェクトの処理を記述してください。")
+    """ローカルWebアプリを単一ワーカーで起動する。"""
+    uvicorn.run("app:create_app", factory=True, host="127.0.0.1", port=8000, workers=1)
 
 
 if __name__ == "__main__":

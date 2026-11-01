@@ -1,8 +1,24 @@
 # 家計簿アプリ
 
 レシートをPC内のPaddleOCRで読み取り、人が商品名を確認して明細ごとに複数タグを
-付けるローカルWebアプリ。現在は工程0（OCR・商品名候補抽出の検証基盤）を実装済み。
-Web画面・SQLite保存・タグ編集は後続工程。
+付けるローカルWebアプリ。Web画面、SQLite保存、OCRキュー、手動タグ編集を利用できます。
+OCRの候補は必ず画像と照合してください。タグは自動付与しません。
+
+## Webアプリの起動
+
+```sh
+uv sync --locked
+uv run python main.py
+```
+
+ブラウザで `http://127.0.0.1:8000` を開きます。アプリはループバックに単一プロセスで
+起動し、外部ネットワークへ公開しません。OCRモデルを準備していない場合、OCRは失敗状態に
+なりますが、商品名は手入力して保存できます。
+
+保存先は `HOUSE_ACCOUNT_DATA_DIR`、既定値はリポジトリ位置の `data/app/` です。
+データベース、元画像、OCR用にEXIF回転と縮小を適用した画像が保存されます。
+1プロセスだけが同じ保存先を使用できます。バックアップする場合は、アプリ終了後に
+保存先全体をコピーしてください。
 
 ## セットアップとOCR検証
 
@@ -100,24 +116,35 @@ CIは固定OCR結果で検査し、モデルを取得しない。[テストの�
 同梱の.agentsはアプリの品質検査から除外し、app・src・scripts・testsは検査する。
 
 app/はWeb層、src/house_account/は業務処理、scripts/は補助コマンド。
-スクリプトは業務処理を呼び出す。今後の工程と受け入れ条件は
-[MVP実装計画](docs/mvp-implementation-plan.md)、実機結果は
-[OCR検証記録](docs/ocr-validation.md)に記載する。
+スクリプトは業務処理を呼び出す。画面・保存・OCR・タグの仕様は
+[実装計画](docs/plans/PLAN.md)、追加画像によるOCR精度の最終評価は
+[Issue #3](https://github.com/cake2357/house-account-app/issues/3)で管理する。
 
 ## PRの自動レビュー・修正
 
 チェックアウト済みPRをCodex CLIでレビューし、指摘と検証失敗を最大3回修正します。
 レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
 `codex-review.toml` またはCLI引数で個別に変更できます。
+`--pr` を指定すると、レビュー・修正ごとの結果を対象PRへコメントします。
+`--publish-fixes` を併用すると、指摘0件かつ全検証成功後に修正をcommit・pushします。
+PR #17のブランチで修正を反映する場合は、次のように実行します。
 
 ```sh
 codex login status
+gh auth status
+gh pr checkout 17
 git fetch origin main
-uv run --locked python scripts/codex_pr_review_loop.py --dry-run
-uv run --locked python scripts/codex_pr_review_loop.py
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --publish-fixes --dry-run
+uv run --locked python scripts/codex_pr_review_loop.py --pr 17 --publish-fixes
 ```
 
 PRブランチ上で、未コミット・未追跡の変更がない状態から実行してください。
-修正は作業ツリーに残り、commit・push・コメント投稿・mergeは自動化しません。
-VS Codeの「タスクの実行」からも起動できます。
+反映したコミットSHAは最終レビューコメントとログに残ります。
+検証失敗や人の判断待ちの場合は自動反映せず、変更を作業ツリーに残します。
+`--pr` のみならコメントを投稿して修正は未コミットで残し、両方省略するとローカルで実行します。
+VS Codeの「タスクの実行」→「PR: Codexレビュー・修正」からも起動でき、
+PR番号を入力します。通常タスクは検証済みの修正をcommit・pushし、結果をコメントします。
+「PR: Codexレビュー・修正とコメント」も同じ動作です。
+投稿せずに実行する場合は「PR: Codexレビュー・修正（ローカルのみ）」を選んでください。
+開始時の「PRコメント: 有効」とコメント先URLで、投稿が有効であることを確認できます。
 導入、PRの選択、設定、ログ、終了状態は[自動レビューの手順](docs/codex-pr-review.md)を参照してください。
