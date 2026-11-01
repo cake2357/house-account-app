@@ -142,7 +142,10 @@
   }
 
   async function loadTagOptions(row, query = "") {
+    const revision = Number(row.dataset.tagSearchRevision || 0) + 1;
+    row.dataset.tagSearchRevision = String(revision);
     const result = await request(`/api/tags?q=${encodeURIComponent(query)}`);
+    if (row.dataset.tagSearchRevision !== String(revision)) return;
     const selected = selectedTags(row);
     const currentTags = new Map(selected.map((tag) => [tag.id, tag]));
     result.items.forEach((tag) => currentTags.set(tag.id, tag));
@@ -226,6 +229,7 @@
     });
     let searchTimer;
     search.addEventListener("input", () => {
+      row.dataset.tagSearchRevision = String(Number(row.dataset.tagSearchRevision || 0) + 1);
       window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
         loadTagOptions(row, search.value).catch((error) => {

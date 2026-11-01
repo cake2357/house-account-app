@@ -275,6 +275,55 @@ def test_save_network_failure_restores_failure_state_without_field_errors(
         browser.close()
 
 
+def test_tag_search_ignores_responses_for_older_queries(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+
+        row = page.locator(".item-card").first
+        row.locator(".tag-picker summary").click()
+        page.evaluate(
+            """() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.fetch = (input, options) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                const query = url.searchParams.get("q");
+                if (url.pathname === "/api/tags" && ["A", "B"].includes(query)) {
+                  return new Promise((resolve) => {
+                    window[`__releaseTagSearch${query}`] = () => resolve(new Response(
+                      JSON.stringify({ items: [{ id: query, name: `タグ${query}` }] }),
+                      { status: 200, headers: { "Content-Type": "application/json" } },
+                    ));
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            }"""
+        )
+
+        search = row.get_by_label("タグを検索")
+        search.fill("A")
+        page.wait_for_function("() => typeof window.__releaseTagSearchA === 'function'")
+        search.fill("B")
+        page.wait_for_function("() => typeof window.__releaseTagSearchB === 'function'")
+
+        page.evaluate("() => window.__releaseTagSearchB()")
+        expect(row.locator(".tag-option")).to_contain_text("タグB")
+        page.evaluate("() => window.__releaseTagSearchA()")
+        expect(row.locator(".tag-option")).to_contain_text("タグB")
+        expect(row.locator(".tag-option")).not_to_contain_text("タグA")
+        browser.close()
+
+
 def test_tag_search_results_remain_disabled_while_saving(app_url: str, fixture_dir: Path) -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
