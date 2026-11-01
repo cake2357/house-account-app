@@ -360,8 +360,8 @@ class ReceiptService:
             if normalized_query:
                 tags = connection.execute(
                     "SELECT id, name FROM tags WHERE normalized_name LIKE ? ESCAPE '\\' "
-                    "ORDER BY name COLLATE NOCASE LIMIT 100",
-                    (f"%{self._escape_like(normalized_query)}%",),
+                    "ORDER BY (normalized_name = ?) DESC, name COLLATE NOCASE LIMIT 100",
+                    (f"%{self._escape_like(normalized_query)}%", normalized_query),
                 ).fetchall()
             else:
                 tags = connection.execute(

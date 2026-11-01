@@ -131,6 +131,21 @@ def test_receipt_survives_restart_and_serves_image(
         assert executor.calls == 1
 
 
+def test_tag_search_keeps_exact_match_within_result_limit(settings: Settings) -> None:
+    with TestClient(create_app(settings, EmptyOcr()), base_url="http://127.0.0.1") as client:
+        service = ReceiptService(settings)
+        for number in range(1, 101):
+            service.create_tag(f"A{number:03}食品")
+        exact_tag = service.create_tag("食品")
+
+        response = client.get("/api/tags", params={"q": "食品"})
+
+    assert response.status_code == 200
+    results = response.json()["items"]
+    assert len(results) == 100
+    assert results[0] == exact_tag
+
+
 def test_manual_tags_revision_conflicts_and_receipt_scoping(
     settings: Settings, image_bytes: bytes, fixture_dir: Path
 ) -> None:

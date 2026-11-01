@@ -24,6 +24,42 @@ def test_transparent_png_is_flattened_on_white_for_ocr(tmp_path: Path) -> None:
         assert ocr_image.getpixel((5, 5)) == (255, 255, 255)
 
 
+@pytest.mark.parametrize(
+    ("mode", "transparency"),
+    [
+        ("RGB", (0, 0, 0)),
+        ("L", 0),
+    ],
+)
+def test_png_transparency_key_is_flattened_on_white_for_ocr(
+    tmp_path: Path,
+    mode: str,
+    transparency: int | tuple[int, int, int],
+) -> None:
+    image = Image.new(mode, (20, 10))
+    if mode == "RGB":
+        image.putdata(
+            [(0, 0, 0) if x < 10 else (32, 32, 32) for _ in range(10) for x in range(20)]
+        )
+    else:
+        image.putdata([0 if x < 10 else 32 for _ in range(10) for x in range(20)])
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", transparency=transparency)
+    content = buffer.getvalue()
+    with Image.open(BytesIO(content)) as png_image:
+        assert "transparency" in png_image.info
+
+    stored = store_image(content, tmp_path / "original", tmp_path / "ocr")
+
+    with Image.open(tmp_path / "ocr" / stored.ocr_image_name) as ocr_image:
+        transparent_pixel_result = ocr_image.getpixel((2, 5))
+        opaque_pixel_result = ocr_image.getpixel((17, 5))
+        assert isinstance(transparent_pixel_result, tuple)
+        assert isinstance(opaque_pixel_result, tuple)
+        assert all(channel >= 250 for channel in transparent_pixel_result)
+        assert all(channel <= 40 for channel in opaque_pixel_result)
+
+
 def test_exif_rotation_is_applied_to_separate_ocr_image(tmp_path: Path) -> None:
     buffer = BytesIO()
     image = Image.new("RGB", (20, 10), "white")

@@ -14,6 +14,7 @@
   let initialized = false;
   let dirty = false;
   let saving = false;
+  let rerunningOcr = false;
   let pollTimer = null;
   let runRevision = 0;
   const pollingRunIds = new Set();
@@ -29,7 +30,7 @@
     [...document.querySelectorAll(".editor-column input, .editor-column button, .save-bar button")]
       .forEach((control) => { control.disabled = editorDisabled; });
     addCandidatesButton.disabled = editorDisabled || !(detail?.last_successful_run?.candidates?.length);
-    document.querySelector("#rerun-ocr").disabled = !initialized;
+    document.querySelector("#rerun-ocr").disabled = !initialized || rerunningOcr;
     document.querySelector("#delete-receipt").disabled = !initialized;
   }
 
@@ -141,7 +142,7 @@
     updateSavingControls();
   }
 
-  async function loadTagOptions(row, query = "") {
+  async function loadTagOptions(row, query = "", additionalTags = []) {
     const revision = Number(row.dataset.tagSearchRevision || 0) + 1;
     row.dataset.tagSearchRevision = String(revision);
     const result = await request(`/api/tags?q=${encodeURIComponent(query)}`);
@@ -149,6 +150,7 @@
     const selected = selectedTags(row);
     const currentTags = new Map(selected.map((tag) => [tag.id, tag]));
     result.items.forEach((tag) => currentTags.set(tag.id, tag));
+    additionalTags.forEach((tag) => currentTags.set(tag.id, tag));
     renderTagOptions(row, [...currentTags.values()]);
   }
 
@@ -215,13 +217,14 @@
         return;
       }
       try {
-        await request("/api/tags", {
+        const createdTag = await request("/api/tags", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: tagName }),
         });
+        window.clearTimeout(searchTimer);
         search.value = "";
-        await loadTagOptions(row);
+        await loadTagOptions(row, "", [createdTag]);
         search.focus();
       } catch (error) {
         saveError.textContent = error.message;
@@ -430,18 +433,29 @@
   });
   saveDraftButton.addEventListener("click", () => save("draft"));
   saveConfirmedButton.addEventListener("click", () => save("confirmed"));
-  document.querySelector("#rerun-ocr").addEventListener("click", async (event) => {
-    if (!initialized) return;
-    const button = event.currentTarget;
-    button.disabled = true;
+  document.querySelector("#rerun-ocr").addEventListener("click", async () => {
+    if (!initialized || rerunningOcr) return;
+    rerunningOcr = true;
+    const rerunRevision = ++runRevision;
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    updateSavingControls();
+    let rerunCompleted = false;
     try {
       const result = await request(`/api/receipts/${encodeURIComponent(receiptId)}/ocr-runs`, { method: "POST" });
-      setLatestRun(await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`));
+      const run = await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`);
+      if (runRevision !== rerunRevision) return;
+      setLatestRun(run);
       pollRun(detail.latest_run);
+      rerunCompleted = true;
     } catch (error) {
       ocrMessage.textContent = error.message;
     } finally {
-      button.disabled = false;
+      rerunningOcr = false;
+      updateSavingControls();
+      if (!rerunCompleted) pollRun(detail.latest_run);
     }
   });
   document.querySelector("#delete-receipt").addEventListener("click", async (event) => {
@@ -459,7 +473,7 @@
     }
   });
   window.addEventListener("beforeunload", (event) => {
-    if (!dirty) return;
+    if (!dirty && !saving) return;
     event.preventDefault();
     event.returnValue = "";
   });

@@ -57,6 +57,7 @@ a { color: inherit; }
   background: #fbfdfb;
 }
 .file-picker { min-width: 0; display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.file-picker-info { min-width: 0; flex: 1; }
 .file-picker strong, .file-picker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-picker strong { font-size: 14px; }
 .file-picker small { margin-top: 4px; color: var(--muted); font-size: 12px; }

@@ -78,15 +78,14 @@ def store_image(
         prepared = ImageOps.exif_transpose(image)
         if prepared.width > MAX_OCR_EDGE or prepared.height > MAX_OCR_EDGE:
             prepared.thumbnail((MAX_OCR_EDGE, MAX_OCR_EDGE), Image.Resampling.LANCZOS)
-        if prepared.mode not in {"RGB", "L"}:
+        if "A" in prepared.getbands() or "transparency" in prepared.info:
             background = Image.new("RGB", prepared.size, "white")
-            if "A" in prepared.getbands() or "transparency" in prepared.info:
-                rgba_image = prepared.convert("RGBA")
-                background.paste(rgba_image, mask=rgba_image.getchannel("A"))
-                rgba_image.close()
-                prepared = background
-            else:
-                prepared = prepared.convert("RGB")
+            rgba_image = prepared.convert("RGBA")
+            background.paste(rgba_image, mask=rgba_image.getchannel("A"))
+            rgba_image.close()
+            prepared = background
+        elif prepared.mode not in {"RGB", "L"}:
+            prepared = prepared.convert("RGB")
         if prepared.mode == "L":
             prepared = prepared.convert("RGB")
         prepared.save(temporary_paths[1], format="JPEG", quality=92, optimize=True)

@@ -79,6 +79,31 @@ def select_tag(page: Page, item_index: int, tag_name: str) -> None:
     row.locator(".tag-picker summary").click()
 
 
+def test_long_upload_filename_is_truncated_on_mobile(app_url: str) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.goto(app_url)
+        filename = "receipt-" + "x" * 120 + ".png"
+        page.locator("#receipt-file").set_input_files(
+            {"name": filename, "mimeType": "image/png", "buffer": b"image"}
+        )
+
+        filename_label = page.locator(".file-picker strong")
+        expect(filename_label).to_have_text(filename)
+        dimensions = filename_label.evaluate(
+            """element => ({
+              clientWidth: element.clientWidth,
+              scrollWidth: element.scrollWidth,
+              textOverflow: getComputedStyle(element).textOverflow,
+            })"""
+        )
+        assert dimensions["clientWidth"] < dimensions["scrollWidth"]
+        assert dimensions["textOverflow"] == "ellipsis"
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
 def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_dir: Path) -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -621,6 +646,132 @@ def test_stale_ocr_poll_response_does_not_replace_newer_run(
         browser.close()
 
 
+def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+
+        def expose_running_run(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = {
+                    "id": "run-A",
+                    "status": "running",
+                    "candidates": [],
+                    "raw": None,
+                    "error_message": None,
+                }
+                detail["last_successful_run"] = None
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", expose_running_run)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__runAPollCount = 0;
+              window.__rerunPostCount = 0;
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/ocr-runs/run-A") {
+                  window.__runAPollCount += 1;
+                  if (window.__runAPollCount === 1) {
+                    return new Promise((resolve) => {
+                      window.__releaseRunA = () => {
+                        resolve(new Response(JSON.stringify({
+                          id: "run-A",
+                          status: "succeeded",
+                          candidates: [{ id: "candidate-A", name: "古い実行A候補", needs_review: false }],
+                          raw: null,
+                          error_message: null,
+                        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                        window.__oldRunAReleased = true;
+                      };
+                    });
+                  }
+                  return new Response(JSON.stringify({
+                    id: "run-A",
+                    status: "running",
+                    candidates: [],
+                    raw: null,
+                    error_message: null,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                if (url.pathname.endsWith("/ocr-runs") && options.method === "POST") {
+                  window.__rerunPostCount += 1;
+                  return new Response(JSON.stringify({ run_id: "run-B", created: true }), {
+                    status: 202,
+                    headers: { "Content-Type": "application/json" },
+                  });
+                }
+                if (url.pathname === "/api/ocr-runs/run-B") {
+                  return new Promise((resolve) => {
+                    window.__releaseRunB = () => resolve(new Response(JSON.stringify({
+                      id: "run-B",
+                      status: "succeeded",
+                      candidates: [{ id: "candidate-B", name: "新しい実行B候補", needs_review: false }],
+                      raw: null,
+                      error_message: null,
+                    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                    window.__runBStarted = true;
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        page.wait_for_function("() => window.__runAPollCount === 1", timeout=4_000)
+
+        page.locator("details.extra-actions > summary").click()
+        rerun_button = page.get_by_role("button", name="OCRを再実行")
+        rerun_button.click()
+        page.wait_for_function("() => window.__runBStarted === true")
+        expect(rerun_button).to_be_disabled()
+
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        row = page.locator(".item-card").first
+        row.get_by_label("商品名").fill("再実行中に保存する明細")
+        with page.expect_response(
+            lambda response: urlsplit(response.url).path == "/api/tags" and response.request.method == "GET"
+        ):
+            row.locator(".tag-picker summary").click()
+        expect(rerun_button).to_be_disabled()
+
+        rerun_button.evaluate(
+            "button => button.dispatchEvent(new MouseEvent('click', { bubbles: true }))"
+        )
+        assert page.evaluate("() => window.__rerunPostCount") == 1
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(rerun_button).to_be_disabled()
+
+        page.evaluate("() => window.__releaseRunA()")
+        page.wait_for_function("() => window.__oldRunAReleased === true")
+        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        expect(page.locator("#candidate-list")).not_to_contain_text("古い実行A候補")
+
+        page.evaluate("() => window.__releaseRunB()")
+        expect(page.locator("#candidate-list")).to_contain_text("新しい実行B候補")
+        expect(rerun_button).to_be_enabled()
+        browser.close()
+
+
 def test_deleting_dirty_receipt_clears_beforeunload_warning(
     app_url: str, fixture_dir: Path
 ) -> None:
@@ -883,4 +1034,126 @@ def test_pagination_disables_navigation_until_requested_page_is_rendered(
         page.get_by_role("button", name="前へ").click()
         expect(page.locator("#page-indicator")).to_have_text("1ページ")
         assert page.evaluate("() => window.__receiptPageRequests") == ["1", "2", "1"]
+        browser.close()
+
+
+def test_confirming_unchanged_draft_warns_before_unload_while_saving(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.get_by_label("商品名").fill("保存済みの明細")
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+
+        page.reload()
+        expect(page.locator(".item-card")).to_have_count(1)
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        assert not page.evaluate(
+            """() => {
+              const event = new Event("beforeunload", { cancelable: true });
+              window.dispatchEvent(event);
+              return event.defaultPrevented;
+            }"""
+        )
+
+        page.evaluate(
+            """() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.fetch = (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname.endsWith("/items") && options.method === "PUT") {
+                  window.__confirmedStatus = JSON.parse(options.body).status;
+                  return new Promise((resolve) => {
+                    window.__releaseConfirmedSave = () => resolve(new Response(JSON.stringify({
+                      revision: 2,
+                      status: "confirmed",
+                      created_at: "2026-01-01T00:00:00Z",
+                      items: [{ id: "saved-item" }],
+                    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+                  });
+                }
+                return nativeFetch(input, options);
+              };
+            }"""
+        )
+
+        page.get_by_role("button", name="確認して保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("保存中")
+        page.wait_for_function("() => window.__confirmedStatus === 'confirmed'")
+        assert page.evaluate(
+            """() => {
+              const event = new Event("beforeunload", { cancelable: true });
+              window.dispatchEvent(event);
+              return event.defaultPrevented;
+            }"""
+        )
+
+        page.evaluate("() => window.__releaseConfirmedSave()")
+        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        browser.close()
+
+
+def test_created_tag_remains_selectable_when_outside_initial_tag_limit(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+
+        page.evaluate(
+            """() => {
+              const nativeFetch = window.fetch.bind(window);
+              const existingTags = Array.from({ length: 100 }, (_, index) => ({
+                id: `existing-${index}`,
+                name: `既存タグ${String(index).padStart(3, "0")}`,
+              }));
+              window.fetch = (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname === "/api/tags" && options.method === "POST") {
+                  return Promise.resolve(new Response(JSON.stringify({
+                    id: "created-tag",
+                    name: "新規作成タグ",
+                  }), { status: 201, headers: { "Content-Type": "application/json" } }));
+                }
+                if (url.pathname === "/api/tags") {
+                  return Promise.resolve(new Response(JSON.stringify({ items: existingTags }), {
+                    status: 200,
+                    headers: { "Content-Type": "application/json" },
+                  }));
+                }
+                return nativeFetch(input, options);
+              };
+            }"""
+        )
+
+        row = page.locator(".item-card").first
+        row.locator(".tag-picker summary").click()
+        row.get_by_label("タグを検索").fill("新規作成タグ")
+        row.get_by_role("button", name="この名前でタグを作成").click()
+
+        created_option = row.locator(".tag-option").filter(has_text="新規作成タグ")
+        expect(created_option).to_have_count(1)
+        expect(created_option.locator("input")).not_to_be_checked()
+        page.wait_for_timeout(200)
+        expect(created_option).to_have_count(1)
         browser.close()
