@@ -748,7 +748,9 @@ def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
         row = page.locator(".item-card").first
         row.get_by_label("商品名").fill("再実行中に保存する明細")
         with page.expect_response(
-            lambda response: urlsplit(response.url).path == "/api/tags" and response.request.method == "GET"
+            lambda response: (
+                urlsplit(response.url).path == "/api/tags" and response.request.method == "GET"
+            )
         ):
             row.locator(".tag-picker summary").click()
         expect(rerun_button).to_be_disabled()
@@ -874,6 +876,71 @@ def test_immediately_completed_rerun_becomes_the_addable_candidate_run(
         expect(page.locator(".item-card").first.get_by_label("商品名")).to_have_value(
             "即時完了候補"
         )
+        browser.close()
+
+
+def test_rerun_polling_retries_after_initial_run_fetch_fails(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.set_default_timeout(5_000)
+        page.add_init_script(
+            """(() => {
+              const nativeFetch = window.fetch.bind(window);
+              window.__rerunFetchCount = 0;
+              window.fetch = async (input, options = {}) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input.url,
+                  window.location.origin,
+                );
+                if (url.pathname.endsWith("/ocr-runs") && options.method === "POST") {
+                  return new Response(JSON.stringify({ run_id: "retry-run", created: true }), {
+                    status: 202,
+                    headers: { "Content-Type": "application/json" },
+                  });
+                }
+                if (url.pathname === "/api/ocr-runs/retry-run") {
+                  window.__rerunFetchCount += 1;
+                  if (window.__rerunFetchCount === 1) {
+                    return new Response("一時的な通信エラー", { status: 503 });
+                  }
+                  return new Response(JSON.stringify({
+                    id: "retry-run",
+                    status: "succeeded",
+                    candidates: [{ id: "retry-candidate", name: "再取得した候補", needs_review: false }],
+                    raw: null,
+                    error_message: null,
+                  }), { status: 200, headers: { "Content-Type": "application/json" } });
+                }
+                return nativeFetch(input, options);
+              };
+            })();"""
+        )
+
+        def hide_existing_runs(route: Route) -> None:
+            path = urlsplit(route.request.url).path
+            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
+            if route.request.method == "GET" and is_receipt_detail:
+                response = route.fetch()
+                detail = response.json()
+                detail["latest_run"] = None
+                detail["last_successful_run"] = None
+                route.fulfill(response=response, json=detail)
+                return
+            route.continue_()
+
+        page.route("**/api/receipts/*", hide_existing_runs)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.locator("details.extra-actions > summary").click()
+        page.get_by_role("button", name="OCRを再実行").click()
+
+        expect(page.locator("#candidate-list")).to_contain_text("再取得した候補", timeout=5_000)
+        assert page.evaluate("() => window.__rerunFetchCount") >= 2
         browser.close()
 
 

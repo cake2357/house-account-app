@@ -38,9 +38,7 @@ def test_png_transparency_key_is_flattened_on_white_for_ocr(
 ) -> None:
     image = Image.new(mode, (20, 10))
     if mode == "RGB":
-        image.putdata(
-            [(0, 0, 0) if x < 10 else (32, 32, 32) for _ in range(10) for x in range(20)]
-        )
+        image.putdata([(0, 0, 0) if x < 10 else (32, 32, 32) for _ in range(10) for x in range(20)])
     else:
         image.putdata([0 if x < 10 else 32 for _ in range(10) for x in range(20)])
     buffer = BytesIO()

@@ -445,6 +445,16 @@
     let rerunCompleted = false;
     try {
       const result = await request(`/api/receipts/${encodeURIComponent(receiptId)}/ocr-runs`, { method: "POST" });
+      const pendingRun = {
+        id: result.run_id,
+        status: "queued",
+        candidates: [],
+        raw: null,
+        error_message: null,
+      };
+      if (runRevision !== rerunRevision) return;
+      detail.latest_run = pendingRun;
+      renderOcrState(pendingRun);
       const run = await request(`/api/ocr-runs/${encodeURIComponent(result.run_id)}`);
       if (runRevision !== rerunRevision) return;
       setLatestRun(run);
