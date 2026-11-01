@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -17,6 +18,7 @@ import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class LoopError(Exception):
@@ -279,6 +281,7 @@ class PRComments:
         answer: dict[str, Any],
         status: str,
         checks: list[dict[str, Any]] | None = None,
+        published_head: str | None = None,
     ) -> None:
         phase = "レビュー" if checks is not None else "修正"
         lines = [
@@ -288,7 +291,11 @@ class PRComments:
             f"- 開始時のHEAD: `{self.head}`",
             f"- 結果: {status}",
             "",
-            "ローカル作業ツリーの結果です。このループによる修正は未コミット・未pushです。",
+            (
+                f"修正をcommit・pushしました。反映したHEAD: `{published_head}`"
+                if published_head
+                else "ローカル作業ツリーの結果です。このループによる修正は未コミット・未pushです。"
+            ),
             "",
             "### 要約",
             "",
@@ -321,8 +328,8 @@ class PRComments:
             raise LoopError(f"PRコメントの投稿に失敗しました。本文: {body} / ログ: {log}")
 
 
-def resolve_pr_comments(repo: Path, number: int, executable: str) -> PRComments:
-    if number < 1:
+def resolve_pr_comments(repo: Path, number: int | str, executable: str) -> PRComments:
+    if isinstance(number, int) and number < 1:
         raise LoopError("PR番号は1以上の整数で指定してください")
     result = subprocess.run(
         [
@@ -353,6 +360,148 @@ def resolve_pr_comments(repo: Path, number: int, executable: str) -> PRComments:
     return PRComments(executable, value["url"], head)
 
 
+def resolve_push_remote(repo: Path, comments: PRComments) -> str:
+    branch = git(repo, "symbolic-ref", "--short", "HEAD").decode().strip()
+    remote = (
+        git(repo, "for-each-ref", "--format=%(upstream:remotename)", f"refs/heads/{branch}")
+        .decode()
+        .strip()
+        or "origin"
+    )
+    if remote == "." or remote.startswith("-"):
+        raise LoopError("PRのheadリポジトリを指すpush先remoteを設定してください")
+    result = subprocess.run(
+        [
+            comments.executable,
+            "pr",
+            "view",
+            comments.url,
+            "--json",
+            "headRepository,headRepositoryOwner",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode:
+        raise LoopError(f"PRのpush先確認に失敗しました: {result.stderr.strip()}")
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise LoopError("PRのheadリポジトリ情報が不正です")
+    owner, repository = value.get("headRepositoryOwner"), value.get("headRepository")
+    if not isinstance(owner, dict) or not isinstance(repository, dict):
+        raise LoopError("PRのheadリポジトリ情報がありません")
+    name = f"{owner.get('login', '')}/{repository.get('name', '')}"
+    urls = git(repo, "remote", "get-url", "--push", "--all", remote).decode().splitlines()
+    if len(urls) != 1:
+        raise LoopError("push先URLが1つのremoteを指定してください")
+    url = urls[0]
+    parsed = urlsplit(url)
+    if parsed.scheme in ("https", "ssh"):
+        host, path = parsed.hostname, parsed.path.lstrip("/")
+    else:
+        match = re.fullmatch(r"(?:[^/@:]+@)?([^/:]+):(.+)", url)
+        host, path = (match[1], match[2]) if match else (None, "")
+    if host != urlsplit(comments.url).hostname or path.removesuffix(".git") != name:
+        raise LoopError("push先remoteがPRのheadリポジトリと一致しません")
+    git(repo, "var", "GIT_AUTHOR_IDENT")
+    git(repo, "var", "GIT_COMMITTER_IDENT")
+    return remote
+
+
+def publication_step(repo: Path, directory: Path, phase: str, args: list[str]) -> None:
+    command = ["git", *args]
+    write_json(directory / f"{phase}-command.json", command)
+    log = directory / f"{phase}.log"
+    if run_process(command, repo, log, 60):
+        raise LoopError(f"修正の{phase}に失敗しました。変更は保持しています。ログ: {log}")
+
+
+def publish_repairs(
+    repo: Path, directory: Path, base: str, verified: str, comments: PRComments, remote: str
+) -> str | None:
+    head, branch = git(repo, "rev-parse", "HEAD"), git(repo, "symbolic-ref", "HEAD")
+    if head.decode().strip() != comments.head:
+        raise LoopError("commit前にHEADが変更されました")
+    resolve_pr_comments(repo, comments.url, comments.executable)
+    if resolve_push_remote(repo, comments) != remote:
+        raise LoopError("実行中にpush先remoteが変更されました")
+    ref = branch.decode().strip()
+    push_url = git(repo, "remote", "get-url", "--push", remote).decode().strip()
+    advertised = git(repo, "ls-remote", "--refs", push_url, ref).decode().split()
+    if advertised != [comments.head, ref]:
+        raise LoopError("push先のHEADが開始時から変更されました。手動確認してください")
+    assert_git_unchanged(repo, head, branch)
+    if snapshot(repo, base) != verified:
+        raise LoopError("検証後にファイルが変更されました。commit・pushは行いません")
+    if not git(repo, "status", "--porcelain", "--untracked-files=all"):
+        return None
+    directory.mkdir()
+    publication: dict[str, Any] = {"status": "preparing", "start_head": comments.head}
+    write_json(directory / "result.json", publication)
+    # 一時indexで検証済みのtreeを固定し、その後の編集をcommitへ混ぜない。
+    index = directory / "index"
+    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+    for tree_args in (("read-tree", "HEAD"), ("add", "--all", "--"), ("write-tree",)):
+        result = subprocess.run(
+            ["git", "-C", str(repo), *tree_args],
+            env=env,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode:
+            raise LoopError(result.stderr.decode(errors="replace").strip())
+    tree = result.stdout.decode().strip()
+    assert_git_unchanged(repo, head, branch)
+    if snapshot(repo, base) != verified:
+        raise LoopError("検証後にファイルが変更されました。commit・pushは行いません")
+    publication_step(repo, directory, "stage", ["read-tree", tree])
+    publication_step(
+        repo, directory, "commit", ["commit", "-m", "fix: apply verified Codex review repairs"]
+    )
+    committed = git(repo, "rev-parse", "HEAD").decode().strip()
+    publication.update(status="committed", head=committed)
+    write_json(directory / "result.json", publication)
+    if (
+        git(repo, "rev-parse", "HEAD^{tree}").decode().strip() != tree
+        or git(repo, "rev-parse", "HEAD^") != head
+        or git(repo, "symbolic-ref", "HEAD") != branch
+        or git(repo, "status", "--porcelain", "--untracked-files=all")
+    ):
+        raise LoopError("commit時に検証済みの内容が変わりました。pushは行いません")
+    if resolve_push_remote(repo, comments) != remote:
+        raise LoopError("push先remoteが変更されました")
+    push_url = git(repo, "remote", "get-url", "--push", remote).decode().strip()
+    advertised = git(repo, "ls-remote", "--refs", push_url, ref).decode().split()
+    if advertised != [comments.head, ref]:
+        raise LoopError("commit後にpush先のHEADが変更されました。pushは行いません")
+    if (
+        git(repo, "rev-parse", "HEAD").decode().strip() != committed
+        or git(repo, "symbolic-ref", "HEAD") != branch
+        or git(repo, "status", "--porcelain", "--untracked-files=all")
+    ):
+        raise LoopError("push直前にローカルの状態が変わりました。pushは行いません")
+    publication_step(
+        repo,
+        directory,
+        "push",
+        [
+            "push",
+            "--porcelain",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            remote,
+            f"{committed}:{ref}",
+        ],
+    )
+    publication.update(status="pushed")
+    write_json(directory / "result.json", publication)
+    return committed
+
+
 def repair_loop(
     repo: Path,
     directory: Path,
@@ -360,6 +509,7 @@ def repair_loop(
     executable: str,
     base: str,
     comments: PRComments | None = None,
+    push_remote: str | None = None,
 ) -> tuple[str, int, str]:
     head = git(repo, "rev-parse", "HEAD")
     branch = git(repo, "symbolic-ref", "HEAD")
@@ -393,6 +543,17 @@ HEAD同士の差分だけで判定しないでください。変更で生じた�
         if snapshot(repo, base) != before:
             raise LoopError("レビュー中にファイルが変更されました")
         failed = [result for result in checks if result["returncode"] != 0]
+        published_head = None
+        if (
+            push_remote is not None
+            and not review["needs_human"]
+            and not review["findings"]
+            and not failed
+        ):
+            assert comments is not None
+            published_head = publish_repairs(
+                repo, directory / "publication", base, before, comments, push_remote
+            )
         if comments is not None:
             if review["needs_human"]:
                 review_status = "人の判断が必要"
@@ -410,11 +571,15 @@ HEAD同士の差分だけで判定しないでください。変更で生じた�
                 answer=review,
                 status=review_status,
                 checks=checks,
+                published_head=published_head,
             )
         if review["needs_human"]:
             return "needs_human", fixes, review["reason"]
         if not review["findings"] and not failed:
-            return "success", fixes, "指摘0件、すべての検証が成功しました"
+            message = "指摘0件、すべての検証が成功しました"
+            if published_head:
+                message += f"。修正をcommit・pushしました: {published_head}"
+            return "success", fixes, message
         if fixes == settings.max_fixes:
             return "max_fixes", fixes, "修正回数の上限です。残る指摘・検証失敗を確認してください"
         failure_context = [
@@ -469,6 +634,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--config", type=Path, help="TOML設定。既定: 対象repo/codex-review.toml")
     result.add_argument("--base", help="PRのbase ref。開始時にmerge-baseを固定")
     result.add_argument("--pr", type=int, help="各レビュー・修正結果をコメントするPR番号")
+    result.add_argument(
+        "--publish-fixes",
+        action="store_true",
+        help="検証・再レビュー成功後に修正をcommit・push（--pr必須）",
+    )
     result.add_argument("--gh-bin", default="gh", help="GitHub CLI実行ファイルの名前またはパス")
     result.add_argument("--review-model")
     result.add_argument("--fix-model")
@@ -524,10 +694,13 @@ def main(argv: list[str] | None = None) -> int:
                 "branch": branch,
                 "merge_base": base,
                 "pr": args.pr,
+                "publish_fixes": args.publish_fixes,
                 **asdict(settings),
             }
             if args.pr is not None and args.pr < 1:
                 raise LoopError("PR番号は1以上の整数で指定してください")
+            if args.publish_fixes and args.pr is None:
+                raise LoopError("--publish-fixes には --pr <PR番号> が必要です")
             if args.dry_run:
                 print(json.dumps(metadata, ensure_ascii=False, indent=2))
                 return 0
@@ -536,11 +709,15 @@ def main(argv: list[str] | None = None) -> int:
             write_json(directory / "settings.json", metadata)
             print(f"ログ: {directory}", flush=True)
             comments = None
+            push_remote = None
             if args.pr is not None:
                 comments = resolve_pr_comments(repo, args.pr, args.gh_bin)
                 write_json(directory / "pull-request.json", asdict(comments))
                 print("PRコメント: 有効（各レビュー・修正後に投稿します）", flush=True)
                 print(f"コメント先: {comments.url}", flush=True)
+                if args.publish_fixes:
+                    push_remote = resolve_push_remote(repo, comments)
+                    print("修正の反映: 有効（全検証・再レビュー成功後にcommit・push）", flush=True)
             else:
                 print(
                     "PRコメント: 無効（ローカルのみ）。"
@@ -548,12 +725,14 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
             status, fixes, message = repair_loop(
-                repo, directory, settings, args.codex_bin, base, comments
+                repo, directory, settings, args.codex_bin, base, comments, push_remote
             )
             write_json(
                 directory / "result.json", {"status": status, "fixes": fixes, "message": message}
             )
-            print(f"{status}: {message}\n変更は未コミットです。ログ: {directory}")
+            print(f"{status}: {message}\nログ: {directory}")
+            if not args.publish_fixes or status != "success":
+                print("修正済みファイルは作業ツリーに残しています。")
             if comments is None:
                 print("PRコメントは投稿していません（--pr 未指定）。")
             return 0 if status == "success" else 1

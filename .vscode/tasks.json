@@ -7,7 +7,7 @@
       "command": "uv",
       "args": [
         "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
-        "--pr", "${input:prNumber}"
+        "--pr", "${input:prNumber}", "--publish-fixes"
       ],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
@@ -34,7 +34,7 @@
       "command": "uv",
       "args": [
         "run", "--locked", "python", "scripts/codex_pr_review_loop.py",
-        "--pr", "${input:prNumber}"
+        "--pr", "${input:prNumber}", "--publish-fixes"
       ],
       "options": {"cwd": "${workspaceFolder}"},
       "problemMatcher": []
@@ -44,7 +44,7 @@
     {
       "id": "prNumber",
       "type": "promptString",
-      "description": "コメント先のPR番号（チェックアウト中のPR）"
+      "description": "コメント・修正の反映先PR番号（チェックアウト中のPR）"
     }
   ]
 }

@@ -3,6 +3,7 @@
 ローカルにチェックアウトしたPRの差分をレビューし、指摘と検証失敗を修正します。
 通常の `codex exec --output-schema` を使い、Pythonが終了条件を判定します。
 `--pr` でPR番号を指定すると、各レビュー・修正結果をPRにコメントします。
+`--publish-fixes` を併用すると、指摘0件かつ全検証成功後の修正をcommit・pushします。
 Python 3.13以上、macOSまたはLinux、Git、Codex CLIが必要です。
 スクリプト本体は標準ライブラリだけを使います。
 
@@ -65,19 +66,19 @@ PR番号は `--repo` の作業ツリーからGitHub CLIが選択するリポジ�
 gh auth status
 gh pr checkout 123
 git fetch origin main
-uv run --locked python scripts/codex_pr_review_loop.py --base origin/main --pr 123
+uv run --locked python scripts/codex_pr_review_loop.py --base origin/main --pr 123 --publish-fixes
 ```
 
 開始時にPRがオープン中で、PRのheadブランチ名・コミットSHAがローカルの
 ブランチ・HEADと一致することを確認します。一致しない場合はAI・検証を実行せず停止します。
-修正がまだPRにpushされていないことを、各コメントに明記します。
+途中のコメントには修正が未反映であること、反映後の最終コメントにはコミットSHAを記載します。
 
 | タイミング | コメント内容 |
 | --- | --- |
 | 各レビュー後 | 回数、モデル、開始時のHEAD、要約、重要度・ファイル・行番号付きの指摘、検証コマンドごとの成否 |
 | 各修正後 | 回数、モデル、開始時のHEAD、修正要約、次のラウンドで再検証する旨 |
 | 人の判断が必要・停滞・修正上限 | 該当するレビューまたは修正のコメントに停止理由を記載 |
-| 最終レビュー後 | 指摘0件かつ全検証成功、または残る指摘・検証失敗を記載 |
+| 最終レビュー後 | 指摘0件かつ全検証成功、反映したSHA、または残る指摘・検証失敗を記載 |
 
 例として1回の修正で成功した場合、「レビュー1 → 修正1 → レビュー2」の
 3件をPRの会話コメントに追加します。レビュー承認や行単位のインラインコメントは作りません。
@@ -90,6 +91,30 @@ uv run --locked python scripts/codex_pr_review_loop.py --base origin/main --pr 1
 ローカル実行の終了時にも、コメントを投稿していないことを表示します。
 `--dry-run --pr 123` はPR番号を含む設定を表示するだけで、GitHubへの問い合わせや投稿も行いません。
 GitHub CLIがPATHにない場合は `--gh-bin /absolute/path/to/gh` を指定できます。
+
+### 検証済みの修正をcommit・pushする
+
+`--pr 123 --publish-fixes` は、全チェック成功・再レビュー指摘0件になった時点で、
+Python側が今回の修正を1コミットにまとめてpushします。通常のVS Codeタスクでも有効です。
+`--pr` のみならコメント投稿だけを行い、修正は未コミットで残します。
+`--publish-fixes` 単独はエラーです。`--dry-run` ではGitHubへの接続・commit・pushは行いません。
+
+Gitのコミット用ユーザー設定と、PRのheadリポジトリへのpush権限が必要です。
+push先は現在のブランチのupstream remote（未設定なら `origin`）で、
+HTTPSまたはSSHのURLがPRのheadリポジトリを指すことを確認します。
+forkのPRはforkを指すremoteをupstreamに設定してください。
+複数のpush先URLがあるremoteは使用しません。
+
+反映直前にPRの状態・ブランチ・HEAD、remoteのHEAD、検証後のファイル変更を確認します。
+一時indexで検証した内容を固定し、commit後も内容・親コミット・作業ツリーを確認します。
+pushは対象ブランチだけに行い、force pushはしません。修正不要なら新しいコミットは作りません。
+検証失敗、停滞、修正上限、人の判断待ちの場合もcommit・pushしません。
+
+失敗時は `error` で停止し、変更や作成済みコミットを保持します。自動で再pushしません。
+`publication/result.json` の `preparing` / `committed` / `pushed`、`head` と、
+`stage.log` / `commit.log` / `push.log`、各コマンドのJSONを確認してください。
+commit失敗ではステージ済み変更が残る場合があります。pushの通信失敗では反映済みの可能性もあるため、
+ローカルとremoteのHEADを確認してから再開します。push後のコメント投稿失敗でもcommitは取り消しません。
 
 投稿が失敗・時間切れになった場合は `error`（終了コード2）で停止します。
 投稿本文 `comment.md`、コマンド `comment-command.json`、応答 `comment.log` を
@@ -144,7 +169,7 @@ VS Codeでは「ターミナル → タスクの実行」から次のタスク�
 
 | タスク | 動作 |
 | --- | --- |
-| PR: Codexレビュー・修正 | PR番号を入力し、レビュー・修正結果をコメントする |
+| PR: Codexレビュー・修正 | PR番号を入力し、検証済み修正をcommit・pushして結果をコメントする |
 | PR: Codexレビュー・修正とコメント | 通常のレビュー・修正タスクと同じ動作（従来名も利用可能） |
 | PR: Codexレビュー・修正（ローカルのみ） | コメントを投稿せずにレビュー・修正する |
 | PR: Codexレビュー設定の確認 | 設定・Git状態を表示する。AI・検証・GitHubへの接続は行わない |
@@ -173,8 +198,8 @@ VS Codeでは「ターミナル → タスクの実行」から次のタスク�
 
 `--dry-run` は設定・Git状態だけを表示して0で終了します。AI・検証・GitHubへの接続は実行しません。
 タイムアウトとCtrl+Cでは実行中のプロセスグループを終了します。
-どの終了状態でも修正済みファイルはそのまま残し、自動で巻き戻しません。
-再実行前に差分を確認・コミットしてください。
+修正済みファイルや作成済みコミットは自動で巻き戻しません。
+自動反映を使わない場合や途中停止した場合は、再実行前に差分・HEADを確認してください。
 
 ## ログと権限
 
@@ -188,10 +213,10 @@ VS Codeでは「ターミナル → タスクの実行」から次のタスク�
 既存のCodex設定・MCP連携等は引き継ぐため、この設定だけで全外部操作を隔離するものではありません。
 モデルによるcommit・stage・push・PR/コメント投稿はプロンプトで禁止し、
 HEAD・ブランチ・indexの変更を検出したら停止します。
-`--pr` 指定時のコメント投稿だけをPython側のGitHub CLI呼び出しで行います。
+`--pr` 指定時のコメント投稿と、`--publish-fixes` 指定時の検証後のcommit・pushはPython側で行います。
 無権限化を保証する仕組みではないため、不要な外部連携はCodex側で無効にしてください。
 
-最後に `git diff` と `git status --short` で新規ファイルも確認し、人がcommit・push・mergeを判断します。
+最後に `git diff`、`git status --short`、反映したコミットを確認し、人がmergeを判断します。
 GitHub上の既存レビューコメントの取得や解決、PR更新イベントからの自動起動は含みません。
 
 ## 検証と参考資料
