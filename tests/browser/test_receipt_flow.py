@@ -797,7 +797,7 @@ def test_pagination_disables_navigation_until_requested_page_is_rendered(
                         page_size: 20,
                         total: 21,
                         has_next: false,
-                      }), { status: 200, headers: { "Content-Type": "application/json" } })));
+                      }), { status: 200, headers: { "Content-Type": "application/json" } }));
                     });
                   }
                   return new Response(JSON.stringify({
