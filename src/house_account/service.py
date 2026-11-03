@@ -78,7 +78,7 @@ class ReceiptService:
     def get_receipt(self, receipt_id: str) -> dict[str, Any]:
         with connect(self.database_path) as connection:
             receipt = connection.execute(
-                "SELECT id, status, revision, created_at, updated_at, image_name "
+                "SELECT id, status, revision, created_at, updated_at, image_name, store_tag_id "
                 "FROM receipts WHERE id=?",
                 (receipt_id,),
             ).fetchone()
@@ -93,7 +93,7 @@ class ReceiptService:
             for item in items:
                 tags = connection.execute(
                     "SELECT t.id, t.name FROM item_tags it JOIN tags t ON t.id=it.tag_id "
-                    "WHERE it.item_id=? ORDER BY t.name COLLATE NOCASE, t.id",
+                    "WHERE it.item_id=? AND t.is_store=0 ORDER BY t.name COLLATE NOCASE, t.id",
                     (item["id"],),
                 ).fetchall()
                 item_data.append(
@@ -112,8 +112,17 @@ class ReceiptService:
                 "ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (receipt_id,),
             ).fetchone()
+            store_tag = (
+                connection.execute(
+                    "SELECT id, name FROM tags WHERE id=? AND is_store=1",
+                    (receipt["store_tag_id"],),
+                ).fetchone()
+                if receipt["store_tag_id"]
+                else None
+            )
         return {
             **dict(receipt),
+            "store_tag": dict(store_tag) if store_tag else None,
             "image_url": f"/api/receipts/{receipt_id}/image",
             "items": item_data,
             "latest_run": self._serialize_run(latest),
@@ -175,6 +184,8 @@ class ReceiptService:
         revision: int,
         status: str,
         items: list[dict[str, Any]],
+        store_tag_id: str | None = None,
+        store_tag_provided: bool = False,
     ) -> dict[str, Any]:
         if status not in {"draft", "confirmed"}:
             raise AppError(
@@ -268,7 +279,7 @@ class ReceiptService:
             )
         with connect(self.database_path) as connection, transaction(connection):
             receipt = connection.execute(
-                "SELECT revision FROM receipts WHERE id=?", (receipt_id,)
+                "SELECT revision, store_tag_id FROM receipts WHERE id=?", (receipt_id,)
             ).fetchone()
             if receipt is None:
                 raise not_found()
@@ -277,6 +288,7 @@ class ReceiptService:
                     "別の画面で内容が更新されました。最新内容を確認してください。",
                     "revision_conflict",
                 )
+            selected_store_tag_id = store_tag_id if store_tag_provided else receipt["store_tag_id"]
             existing_ids = {
                 row[0]
                 for row in connection.execute(
@@ -292,19 +304,37 @@ class ReceiptService:
                 )
             if all_tag_ids:
                 placeholders = ",".join("?" for _ in all_tag_ids)
-                found_tags = {
-                    row[0]
-                    for row in connection.execute(
-                        f"SELECT id FROM tags WHERE id IN ({placeholders})", tuple(all_tag_ids)
-                    )
-                }
-                if found_tags != all_tag_ids:
+                found_tags = connection.execute(
+                    f"SELECT id, is_store FROM tags WHERE id IN ({placeholders})",
+                    tuple(all_tag_ids),
+                ).fetchall()
+                if {row["id"] for row in found_tags} != all_tag_ids:
                     raise AppError(
                         422,
                         "validation_error",
                         "存在しないタグが指定されています。",
                         {"items": "タグを選び直してください。"},
                     )
+                if any(row["is_store"] for row in found_tags):
+                    raise AppError(
+                        422,
+                        "validation_error",
+                        "店舗タグはレシートの店舗欄から選択してください。",
+                        {"items": "店舗タグは明細ごとに変更できません。"},
+                    )
+            if (
+                selected_store_tag_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM tags WHERE id=? AND is_store=1", (selected_store_tag_id,)
+                ).fetchone()
+                is None
+            ):
+                raise AppError(
+                    422,
+                    "validation_error",
+                    "選択した店舗タグが見つかりません。",
+                    {"store_tag_id": "店舗タグを選び直してください。"},
+                )
             for item in prepared:
                 if item["source_run_id"] is not None:
                     run = connection.execute(
@@ -344,32 +374,43 @@ class ReceiptService:
                 )
                 connection.executemany(
                     "INSERT INTO item_tags(item_id, tag_id) VALUES (?, ?)",
-                    [(item["id"], tag_id) for tag_id in item["tag_ids"]],
+                    [(item["id"], tag_id) for tag_id in item["tag_ids"]]
+                    + ([(item["id"], selected_store_tag_id)] if selected_store_tag_id else []),
                 )
             new_revision = revision + 1
             now = now_iso()
             connection.execute(
-                "UPDATE receipts SET status=?, revision=?, updated_at=? WHERE id=?",
-                (status, new_revision, now, receipt_id),
+                "UPDATE receipts SET status=?, revision=?, updated_at=?, store_tag_id=? WHERE id=?",
+                (status, new_revision, now, selected_store_tag_id, receipt_id),
             )
         return self.get_receipt(receipt_id)
 
-    def list_tags(self, query: str = "") -> list[dict[str, str]]:
+    def list_tags(self, query: str = "", is_store: bool | None = None) -> list[dict[str, str]]:
         normalized_query = normalize_tag_name(query)
+        filters: list[str] = []
+        parameters: list[Any] = []
+        if is_store is not None:
+            filters.append("is_store=?")
+            parameters.append(int(is_store))
+        if normalized_query:
+            filters.append("normalized_name LIKE ? ESCAPE '\\'")
+            parameters.append(f"%{self._escape_like(normalized_query)}%")
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
         with connect(self.database_path) as connection:
             if normalized_query:
                 tags = connection.execute(
-                    "SELECT id, name FROM tags WHERE normalized_name LIKE ? ESCAPE '\\' "
+                    f"SELECT id, name FROM tags {where} "
                     "ORDER BY (normalized_name = ?) DESC, name COLLATE NOCASE LIMIT 100",
-                    (f"%{self._escape_like(normalized_query)}%", normalized_query),
+                    (*parameters, normalized_query),
                 ).fetchall()
             else:
                 tags = connection.execute(
-                    "SELECT id, name FROM tags ORDER BY name COLLATE NOCASE LIMIT 100"
+                    f"SELECT id, name FROM tags {where} ORDER BY name COLLATE NOCASE LIMIT 100",
+                    parameters,
                 ).fetchall()
         return [dict(tag) for tag in tags]
 
-    def create_tag(self, name: str) -> dict[str, str]:
+    def create_tag(self, name: str, is_store: bool = False) -> dict[str, Any]:
         display_name = unicodedata.normalize("NFKC", name).strip()
         if not 1 <= len(display_name) <= 40:
             raise AppError(
@@ -383,8 +424,9 @@ class ReceiptService:
         try:
             with connect(self.database_path) as connection, transaction(connection):
                 connection.execute(
-                    "INSERT INTO tags(id, name, normalized_name, created_at) VALUES (?, ?, ?, ?)",
-                    (tag_id, display_name, normalized, now_iso()),
+                    "INSERT INTO tags(id, name, normalized_name, created_at, is_store) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (tag_id, display_name, normalized, now_iso(), int(is_store)),
                 )
         except sqlite3.IntegrityError as error:
             with connect(self.database_path) as connection:
@@ -398,6 +440,41 @@ class ReceiptService:
                 extra={"existing_tag": dict(existing) if existing else None},
             ) from error
         return {"id": tag_id, "name": display_name}
+
+    def rename_store_tag(self, tag_id: str, name: str) -> dict[str, Any]:
+        display_name = unicodedata.normalize("NFKC", name).strip()
+        if not 1 <= len(display_name) <= 40:
+            raise AppError(
+                422,
+                "validation_error",
+                "タグ名は1〜40文字で入力してください。",
+                {"name": "長さを確認してください。"},
+            )
+        normalized = normalize_tag_name(display_name)
+        try:
+            with connect(self.database_path) as connection, transaction(connection):
+                cursor = connection.execute(
+                    "UPDATE tags SET name=?, normalized_name=? WHERE id=? AND is_store=1",
+                    (display_name, normalized, tag_id),
+                )
+                if cursor.rowcount == 0:
+                    raise not_found("店舗タグ")
+        except sqlite3.IntegrityError as error:
+            raise conflict("同じ名前のタグが既にあります。", "duplicate_tag") from error
+        return {"id": tag_id, "name": display_name}
+
+    def delete_store_tag(self, tag_id: str) -> None:
+        with connect(self.database_path) as connection, transaction(connection):
+            tag = connection.execute(
+                "SELECT 1 FROM tags WHERE id=? AND is_store=1", (tag_id,)
+            ).fetchone()
+            if tag is None:
+                raise not_found("店舗タグ")
+            if connection.execute(
+                "SELECT 1 FROM receipts WHERE store_tag_id=? LIMIT 1", (tag_id,)
+            ).fetchone():
+                raise conflict("使用中の店舗タグは削除できません。", "store_tag_in_use")
+            connection.execute("DELETE FROM tags WHERE id=?", (tag_id,))
 
     def claim_next_run(self) -> dict[str, Any] | None:
         with connect(self.database_path) as connection, transaction(connection):

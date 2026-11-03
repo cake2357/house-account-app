@@ -9,6 +9,10 @@
   const saveError = document.querySelector("#save-error");
   const ocrMessage = document.querySelector("#ocr-message");
   const candidatePanel = document.querySelector("#candidate-panel");
+  const storeTagSelect = document.querySelector("#store-tag-select");
+  const storeTagManageSelect = document.querySelector("#manage-store-tag");
+  const storeTagError = document.querySelector("#save-error");
+  let storeTags = [];
   const addCandidatesButton = document.querySelector("#add-candidates");
   let detail;
   let initialized = false;
@@ -31,7 +35,7 @@
 
   function updateSavingControls() {
     const editorDisabled = saving || !initialized;
-    [...document.querySelectorAll(".editor-column input, .editor-column button, .save-bar button")]
+    [...document.querySelectorAll(".editor-column input, .editor-column select, .editor-column button, .save-bar button")]
       .forEach((control) => { control.disabled = editorDisabled; });
     addCandidatesButton.disabled = editorDisabled || !(detail?.last_successful_run?.candidates?.length);
     document.querySelector("#rerun-ocr").disabled = !initialized || rerunningOcr;
@@ -40,6 +44,35 @@
 
   function updateEmptyState() {
     document.querySelector("#items-empty").hidden = list.children.length !== 0;
+  }
+
+  function updateStoreTagRows() {
+    const selected = storeTags.find((tag) => tag.id === detail?.store_tag_id);
+    list.querySelectorAll(".store-tag-chip").forEach((chip) => {
+      chip.textContent = selected ? `店舗: ${selected.name}` : "";
+      chip.hidden = !selected;
+    });
+  }
+
+  function renderStoreTagOptions() {
+    const options = [new Option("選択しない", "")];
+    storeTags.forEach((tag) => options.push(new Option(tag.name, tag.id)));
+    storeTagSelect.replaceChildren(...options);
+    storeTagSelect.value = detail.store_tag_id || "";
+
+    const selectedManageTag = storeTagManageSelect.value;
+    storeTagManageSelect.replaceChildren(new Option("店舗タグを選択", ""));
+    storeTags.forEach((tag) => storeTagManageSelect.add(new Option(tag.name, tag.id)));
+    storeTagManageSelect.value = storeTags.some((tag) => tag.id === selectedManageTag)
+      ? selectedManageTag
+      : "";
+    updateStoreTagRows();
+  }
+
+  async function loadStoreTags() {
+    const result = await request("/api/tags?is_store=true");
+    storeTags = result.items;
+    renderStoreTagOptions();
   }
 
   function clearItemErrors() {
@@ -149,7 +182,7 @@
   async function loadTagOptions(row, query = "", additionalTags = []) {
     const revision = Number(row.dataset.tagSearchRevision || 0) + 1;
     row.dataset.tagSearchRevision = String(revision);
-    const result = await request(`/api/tags?q=${encodeURIComponent(query)}`);
+    const result = await request(`/api/tags?q=${encodeURIComponent(query)}&is_store=false`);
     if (row.dataset.tagSearchRevision !== String(revision)) return;
     const selected = selectedTags(row);
     const currentTags = new Map(selected.map((tag) => [tag.id, tag]));
@@ -198,6 +231,11 @@
     tagBar.className = "tag-bar";
     const chips = document.createElement("div");
     chips.className = "tag-chips";
+    const storeChip = document.createElement("span");
+    storeChip.className = "store-tag-chip";
+    const selectedStoreTag = storeTags.find((tag) => tag.id === detail?.store_tag_id);
+    if (selectedStoreTag) storeChip.textContent = `店舗: ${selectedStoreTag.name}`;
+    else storeChip.hidden = true;
     const picker = document.createElement("details");
     picker.className = "tag-picker";
     const summary = document.createElement("summary");
@@ -259,7 +297,7 @@
     });
     menu.append(search, options, create, close);
     picker.append(summary, menu);
-    tagBar.append(chips, picker);
+    tagBar.append(storeChip, chips, picker);
     const itemError = document.createElement("p");
     itemError.className = "item-error";
     itemError.hidden = true;
@@ -388,7 +426,12 @@
       const result = await request(`/api/receipts/${encodeURIComponent(receiptId)}/items`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ revision: detail.revision, status, items: collectItems() }),
+        body: JSON.stringify({
+          revision: detail.revision,
+          status,
+          store_tag_id: detail.store_tag_id,
+          items: collectItems(),
+        }),
       });
       detail.revision = result.revision;
       detail.status = result.status;
@@ -504,6 +547,8 @@
   async function initialize() {
     updateSavingControls();
     detail = await request(`/api/receipts/${encodeURIComponent(receiptId)}`);
+    detail.store_tag_id = detail.store_tag?.id || null;
+    await loadStoreTags();
     document.querySelector("#receipt-meta").textContent = `${formatDate(detail.created_at)} ・ ${statusLabel(detail.status)}`;
     const imageUrl = `/api/receipts/${encodeURIComponent(receiptId)}/image`;
     document.querySelector("#receipt-image").src = imageUrl;
@@ -522,5 +567,72 @@
 
   initialize().catch((error) => {
     saveError.textContent = error.message;
+  });
+
+  storeTagSelect.addEventListener("change", () => {
+    detail.store_tag_id = storeTagSelect.value || null;
+    updateStoreTagRows();
+    setDirty();
+  });
+
+  document.querySelector("#create-store-tag").addEventListener("click", async () => {
+    const input = document.querySelector("#new-store-tag-name");
+    const name = input.value.trim();
+    if (!name) {
+      input.focus();
+      return;
+    }
+    try {
+      await request("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, is_store: true }),
+      });
+      input.value = "";
+      await loadStoreTags();
+    } catch (error) {
+      storeTagError.textContent = error.message;
+    }
+  });
+
+  document.querySelector("#rename-store-tag").addEventListener("click", async () => {
+    const tagId = storeTagManageSelect.value;
+    const input = document.querySelector("#rename-store-tag-name");
+    const name = input.value.trim();
+    if (!tagId || !name) {
+      (tagId ? input : storeTagManageSelect).focus();
+      return;
+    }
+    try {
+      const renamed = await request(`/api/store-tags/${encodeURIComponent(tagId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      input.value = "";
+      storeTags = storeTags.map((tag) => tag.id === tagId ? renamed : tag);
+      renderStoreTagOptions();
+    } catch (error) {
+      storeTagError.textContent = error.message;
+    }
+  });
+
+  document.querySelector("#delete-store-tag").addEventListener("click", async () => {
+    const tagId = storeTagManageSelect.value;
+    if (!tagId) {
+      storeTagManageSelect.focus();
+      return;
+    }
+    if (!window.confirm("選択した店舗タグを削除します。よろしいですか？")) return;
+    try {
+      await request(`/api/store-tags/${encodeURIComponent(tagId)}`, { method: "DELETE" });
+      if (detail.store_tag_id === tagId) {
+        detail.store_tag_id = null;
+        setDirty();
+      }
+      await loadStoreTags();
+    } catch (error) {
+      storeTagError.textContent = error.message;
+    }
   });
 })();
