@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from house_account.config import Settings
 from house_account.domain.ocr import OcrResult
-from house_account.ocr.extraction import extract_candidates
+from house_account.ocr.extraction import extract_candidates, extract_total_amount_candidates
 from house_account.ocr.serialization import result_from_dict, result_to_dict
 from house_account.service import ReceiptService
 
@@ -164,6 +164,9 @@ class OcrQueue:
         self.service.record_raw_result(run_id, raw)
         try:
             candidates = [asdict(candidate) for candidate in extract_candidates(result)]
+            total_amount_candidates = [
+                asdict(candidate) for candidate in extract_total_amount_candidates(result)
+            ]
         except Exception as error:
             LOGGER.exception("OCR原文から候補を抽出できませんでした。")
             self.service.finish_run(
@@ -175,6 +178,7 @@ class OcrQueue:
             return
         self.service.finish_run(
             run_id,
-            "succeeded" if candidates else "no_candidates",
+            "succeeded" if candidates or total_amount_candidates else "no_candidates",
             candidates=candidates,
+            total_amount_candidates=total_amount_candidates,
         )

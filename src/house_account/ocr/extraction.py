@@ -3,7 +3,7 @@ import unicodedata
 from statistics import median
 from uuid import NAMESPACE_URL, uuid5
 
-from house_account.domain.ocr import Candidate, OcrBlock, OcrResult
+from house_account.domain.ocr import Candidate, OcrBlock, OcrResult, TotalAmountCandidate
 
 PRICE = re.compile(
     r"(?P<price>(?:[¥￥*]\s*)?[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?"
@@ -26,6 +26,11 @@ DATE_OR_PHONE = re.compile(
 )
 HEADER = re.compile(r"(?:お知らせ|広告|キャンペーン).*")
 TOTAL_LINE = re.compile(r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)\s*[:：]?\s*" + PRICE.pattern)
+TOTAL_AMOUNT_LINE = re.compile(
+    r"(?:合\s*計|総\s*計|総額|お買上(?:げ)?(?:合計|計)|お買い上げ(?:合計|計)|"
+    r"税込合計|ご請求額|請求金額|お?支払(?:い)?(?:合計|金額))\s*[:：]?\s*" + PRICE.pattern,
+    re.IGNORECASE,
+)
 QUANTITY = re.compile(r"\d+\s*(?:コ|個|点|本|枚)?\s*[×xX]\s*(?:単|@)?\s*[\d,.]+")
 ADJUSTMENT = re.compile(r"[*\s]*(?:[値值]引額|[値值]引|割引額|[値值]引合計)[*\s]*")
 AUXILIARY = re.compile(r"(?:商品代金|[値值]引合計|税率\s*\d+\s*%\s*[対对]象)")
@@ -43,6 +48,21 @@ def split_price(text: str) -> tuple[str, bool]:
         )
     )
     return (text[: price.start()].strip(), True) if has_price and price else (text, False)
+
+
+def price_yen(text: str) -> int | None:
+    price = PRICE.search(text)
+    if price is None:
+        return None
+    value = price.group("price").strip()
+    value = re.sub(r"^[¥￥*\s]+|[円*※軽\s)）]+$", "", value)
+    value = value.replace(",", "")
+    if not re.fullmatch(r"[+-]?\d+", value):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def group_lines(blocks: tuple[OcrBlock, ...]) -> list[list[int]]:
@@ -100,6 +120,7 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
             continue
         # 数字で終わる商品名の誤切り取りを避け、区切りか通貨表記を必要とする。
         name, has_price = split_price(text)
+        amount_yen = price_yen(text) if has_price else None
         label = name.strip("()（） ")
         if QUANTITY.fullmatch(label) or ADJUSTMENT.fullmatch(label) or AUXILIARY.fullmatch(label):
             continue
@@ -109,6 +130,8 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
         reasons = []
         if not has_price:
             reasons.append("price_not_found")
+        elif amount_yen is None:
+            reasons.append("amount_not_integer")
         if confidence < 0.80:
             reasons.append("low_confidence")
         candidate_id = str(uuid5(NAMESPACE_URL, f"{indexes}:{raw_text}"))
@@ -121,6 +144,37 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
                 confidence=confidence,
                 needs_review=bool(reasons),
                 review_reasons=tuple(reasons),
+                amount_yen=amount_yen,
+                amount_source_text=raw_text if amount_yen is not None else None,
+                amount_source_polygons=(
+                    tuple(result.blocks[i].polygon for i in indexes)
+                    if amount_yen is not None
+                    else ()
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def extract_total_amount_candidates(result: OcrResult) -> tuple[TotalAmountCandidate, ...]:
+    lines = group_lines(result.blocks)
+    candidates: list[TotalAmountCandidate] = []
+    for indexes in lines:
+        raw_text = " ".join(result.blocks[index].text.strip() for index in indexes).strip()
+        text = unicodedata.normalize("NFKC", raw_text)
+        if not TOTAL_AMOUNT_LINE.fullmatch(text):
+            continue
+        amount_yen = price_yen(text)
+        if amount_yen is None or amount_yen < 0:
+            continue
+        candidate_id = str(uuid5(NAMESPACE_URL, f"total:{indexes}:{raw_text}"))
+        candidates.append(
+            TotalAmountCandidate(
+                id=candidate_id,
+                total_amount_yen=amount_yen,
+                raw_text=raw_text,
+                block_indexes=tuple(indexes),
+                source_polygons=tuple(result.blocks[index].polygon for index in indexes),
             )
         )
     return tuple(candidates)

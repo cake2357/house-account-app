@@ -44,6 +44,20 @@ class FixedOcr:
         )
 
 
+class AmountOcr:
+    def __call__(
+        self, image_path: Path, timeout_seconds: float, stopping: threading.Event
+    ) -> OcrResult:
+        return OcrResult(
+            blocks=(
+                OcrBlock("りんご ¥198", ((10, 10), (220, 10), (220, 30), (10, 30)), 0.98),
+                OcrBlock("合計 ¥198", ((10, 50), (220, 50), (220, 70), (10, 70)), 0.97),
+            ),
+            models={"recognition": "amount-test"},
+            versions={"paddleocr": "test"},
+        )
+
+
 class WaitingOcr:
     def __call__(
         self, image_path: Path, timeout_seconds: float, stopping: threading.Event
@@ -129,6 +143,28 @@ def test_receipt_survives_restart_and_serves_image(
         assert detail["items"] == []
         assert client.get(f"/api/receipts/{receipt_id}/image").content == image_bytes
         assert executor.calls == 1
+
+
+def test_ocr_amount_candidates_keep_source_text_and_coordinates(
+    settings: Settings, image_bytes: bytes
+) -> None:
+    with TestClient(create_app(settings, AmountOcr()), base_url="http://127.0.0.1") as client:
+        receipt_id = upload(client, image_bytes)
+        run = wait_for_run(client, receipt_id)
+        reopened = client.get(f"/api/ocr-runs/{run['id']}").json()
+
+    assert run["status"] == "succeeded"
+    item = run["candidates"][0]
+    assert item["name"] == "りんご"
+    assert item["amount_yen"] == 198
+    assert item["amount_source_text"] == "りんご ¥198"
+    assert item["amount_source_polygons"] == [[[10, 10], [220, 10], [220, 30], [10, 30]]]
+    total = run["total_amount_candidates"][0]
+    assert total["total_amount_yen"] == 198
+    assert total["raw_text"] == "合計 ¥198"
+    assert total["source_polygons"] == [[[10, 50], [220, 50], [220, 70], [10, 70]]]
+
+    assert reopened["total_amount_candidates"] == run["total_amount_candidates"]
 
 
 def test_tag_search_keeps_exact_match_within_result_limit(settings: Settings) -> None:
