@@ -742,6 +742,7 @@ def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
         rerun_button = page.get_by_role("button", name="OCRを再実行")
         rerun_button.click()
         page.wait_for_function("() => window.__runBStarted === true")
+        expect(page.locator("#ocr-state")).to_have_text("OCR待機中")
         expect(rerun_button).to_be_disabled()
 
         page.get_by_role("button", name="＋ 明細を追加").click()
@@ -765,11 +766,14 @@ def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
 
         page.evaluate("() => window.__releaseRunA()")
         page.wait_for_function("() => window.__oldRunAReleased === true")
-        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
+        expect(page.locator("#ocr-state")).to_have_text("OCR待機中")
         expect(page.locator("#candidate-list")).not_to_contain_text("古い実行A候補")
+        expect(rerun_button).to_be_disabled()
 
         page.evaluate("() => window.__releaseRunB()")
         expect(page.locator("#candidate-list")).to_contain_text("新しい実行B候補")
+        expect(page.locator("#candidate-list")).not_to_contain_text("古い実行A候補")
+        expect(page.locator("#ocr-state")).to_have_text("読み取り完了")
         expect(rerun_button).to_be_enabled()
         browser.close()
 

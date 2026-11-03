@@ -16,24 +16,61 @@ from pathlib import Path
 
 args = sys.argv[1:]
 assert args[:3] == ["--ask-for-approval", "never", "exec"]
-assert "--output-schema" in args
 assert "--dangerously-bypass-approvals-and-sandbox" not in args
 repo = Path(args[args.index("--cd") + 1])
 state = Path(os.environ["FAKE_STATE"])
 scenario = os.environ.get("FAKE_SCENARIO", "success")
 review = args[args.index("--sandbox") + 1] == "read-only"
+native = "review" in args
+assert not native or review
+assert args[-2:] == ["review", "-"] if native else args[-1:] == ["-"]
+assert "--base" not in args and "--uncommitted" not in args and "--commit" not in args
+if native:
+    assert 'review_model="review-model"' in args
+    assert "--json" in args
+    assert "--output-schema" not in args
+else:
+    assert "--output-schema" in args
 assert args[args.index("--model") + 1] == ("review-model" if review else "fix-model")
 prompt = sys.stdin.read()
+fixed = (repo / "new.py").exists()
+if native:
+    with state.with_name("native-calls.jsonl").open("a") as output:
+        output.write(json.dumps({"args": args, "prompt": prompt}) + "\n")
+    if scenario == "native_error":
+        sys.exit(5)
+    text = "レビュー完了。指摘はありません。" if fixed or scenario in ("checks_only", "clean") else (
+        "Review comment:\n\n- [P1] repair this — " + str(repo / "app.py") + ":1-1\n  repair this\n"
+    )
+    if scenario == "native_empty":
+        text = ""
+    if scenario == "native_human":
+        text = "仕様が不明なためレビューを完了できません。人の判断が必要です。"
+    path = Path(args[args.index("--output-last-message") + 1])
+    path.write_text(text)
+    print("CLI warning on stderr", file=sys.stderr)
+    print(json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "different" if scenario == "native_mismatch" else text
+    }}))
+    if scenario == "native_event_error":
+        print(json.dumps({"type": "turn.failed", "error": {"message": "failed"}}))
+    if scenario != "native_incomplete":
+        print(json.dumps({"type": "turn.completed"}))
+    sys.exit(0)
 with state.open("a") as output:
     output.write(json.dumps({"review": review, "prompt": prompt}) + "\n")
 answer = {"needs_human": False, "reason": "", "summary": os.environ.get("FAKE_SUMMARY", "result")}
-fixed = (repo / "new.py").exists()
 if review:
     answer["findings"] = [] if fixed or scenario in ("checks_only", "clean") else [
         {"priority": "P1", "file": "app.py", "line": 1, "message": "repair this"}
     ]
     if scenario == "human":
         answer.update(needs_human=True, reason="仕様を確認してください")
+    if scenario == "native_human":
+        answer.update(needs_human=True, reason="レビューが未完了です")
+        answer["findings"] = []
+    if scenario == "dropped_findings":
+        answer["findings"] = []
     if scenario == "malformed":
         answer = {"findings": []}
     if scenario == "review_writes":
@@ -204,6 +241,8 @@ def arguments(repo: Path, fake_codex: Path) -> list[str]:
         ("success", "success", 0, 3),
         ("checks_only", "success", 0, 3),
         ("human", "needs_human", 1, 1),
+        ("native_human", "needs_human", 1, 1),
+        ("dropped_findings", "error", 2, 1),
         ("fix_human", "needs_human", 1, 2),
         ("no_change", "stalled", 1, 2),
         ("oscillate", "stalled", 1, 4),
@@ -241,6 +280,52 @@ def test_end_to_end(
         assert loop.git(repo, "rev-parse", "HEAD") == original_head
         assert b"?? new.py" in loop.git(repo, "status", "--porcelain")
         assert (directory / "review-01" / "answer.json").exists()
+
+
+def test_native_review_covers_fixed_base_and_uncommitted_repairs(
+    repo: Path, fake_codex: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = loop.git(repo, "merge-base", "HEAD", "main").decode().strip()
+    assert loop.main(arguments(repo, fake_codex)) == 0
+    directory = Path(capsys.readouterr().out.split("ログ: ", 1)[1].splitlines()[0])
+    calls = [
+        json.loads(line) for line in (tmp_path / "native-calls.jsonl").read_text().splitlines()
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        assert f"git diff --no-ext-diff {base} --" in call["prompt"]
+        assert "git ls-files --others --exclude-standard" in call["prompt"]
+    for iteration in ("00", "01"):
+        phase = directory / f"review-{iteration}"
+        native = json.loads((phase / "native" / "command.json").read_text())
+        conversion = json.loads((phase / "command.json").read_text())
+        assert native[-2:] == ["review", "-"]
+        assert "review" not in conversion
+        assert "--output-schema" in conversion
+        data = json.loads((phase / "prompt.txt").read_text().splitlines()[-1])
+        assert data["review_output"] == (phase / "native" / "answer.txt").read_text()
+        assert (
+            "ツールの使用、ファイルの参照、再レビューは禁止" in (phase / "prompt.txt").read_text()
+        )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["native_error", "native_incomplete", "native_event_error", "native_mismatch", "native_empty"],
+)
+def test_failed_native_review_never_converts_or_repairs(
+    repo: Path,
+    fake_codex: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: str,
+) -> None:
+    monkeypatch.setenv("FAKE_SCENARIO", scenario)
+    head = loop.git(repo, "rev-parse", "HEAD")
+    assert loop.main(arguments(repo, fake_codex)) == 2
+    assert not (tmp_path / "calls.jsonl").exists()
+    assert loop.git(repo, "rev-parse", "HEAD") == head
+    assert not loop.git(repo, "status", "--porcelain")
 
 
 @pytest.mark.parametrize("max_fixes", [0, 1])

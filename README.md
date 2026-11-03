@@ -123,6 +123,7 @@ app/はWeb層、src/house_account/は業務処理、scripts/は補助コマン�
 ## PRの自動レビュー・修正
 
 チェックアウト済みPRをCodex CLIでレビューし、指摘と検証失敗を最大3回修正します。
+レビューには専用の `codex exec review` を使い、その結果をJSONへ変換して修正へ渡します。
 レビューは `gpt-6.1-sol`、修正は `gpt-6-luna` を既定値とし、
 `codex-review.toml` またはCLI引数で個別に変更できます。
 `--pr` を指定すると、レビュー・修正ごとの結果を対象PRへコメントします。
