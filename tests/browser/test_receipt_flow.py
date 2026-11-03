@@ -34,6 +34,20 @@ class FixedOcr:
         )
 
 
+class AmountOcr:
+    def __call__(
+        self, image_path: Path, timeout_seconds: float, stopping: threading.Event
+    ) -> OcrResult:
+        return OcrResult(
+            blocks=(
+                OcrBlock("りんご ¥198", ((10, 10), (220, 10), (220, 30), (10, 30)), 0.98),
+                OcrBlock("合計 ¥298", ((10, 50), (220, 50), (220, 70), (10, 70)), 0.97),
+            ),
+            models={"recognition": "amount-test"},
+            versions={"paddleocr": "test"},
+        )
+
+
 @pytest.fixture
 def app_url(tmp_path: Path) -> Generator[str]:
     with socket.socket() as sock:
@@ -58,6 +72,37 @@ def app_url(tmp_path: Path) -> Generator[str]:
         server.should_exit = True
         thread.join(timeout=3)
         pytest.fail("テスト用Webサーバーが起動しませんでした")
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=8)
+
+
+@pytest.fixture
+def amount_app_url(tmp_path: Path) -> Generator[str]:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(
+                Settings(data_dir=tmp_path / "data", model_dir=tmp_path / "models"), AmountOcr()
+            ),
+            host="127.0.0.1",
+            port=port,
+            log_level="error",
+        )
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 8
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if not server.started:
+        server.should_exit = True
+        thread.join(timeout=3)
+        pytest.fail("金額テスト用Webサーバーが起動しませんでした")
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
@@ -257,6 +302,57 @@ def test_manual_amounts_validate_show_difference_and_persist(
         expect(page.locator(".item-card").nth(0).get_by_label("明細額（円）")).to_have_value("0")
         expect(page.locator(".item-card").nth(1).get_by_label("明細額（円）")).to_have_value("-100")
         expect(page.locator("#total-amount-yen")).to_have_value("0")
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
+def test_ocr_amount_candidates_require_explicit_import_and_preserve_edits(
+    amount_app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(5_000)
+        page.goto(amount_app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        expect(page.locator("#candidate-list")).to_contain_text("りんご ・ 198円", timeout=5_000)
+        expect(page.locator("#total-candidate-list")).to_contain_text("原文: 合計 ¥298")
+
+        page.get_by_role("button", name="候補を明細に追加").click()
+        expect(page.locator(".item-card")).to_have_count(1)
+        amount = page.locator(".item-card").get_by_label("明細額（円）")
+        expect(amount).to_have_value("198")
+        total = page.locator("#total-amount-yen")
+        total.fill("321")
+
+        page.locator(".extra-actions > summary").click()
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/ocr-runs") and response.request.method == "POST"
+            )
+        ) as run_response:
+            page.get_by_role("button", name="OCRを再実行").click()
+        run_id = run_response.value.json()["run_id"]
+        page.wait_for_function(
+            """async runId => {
+              const response = await fetch(`/api/ocr-runs/${runId}`);
+              const run = await response.json();
+              return ["succeeded", "no_candidates"].includes(run.status);
+            }""",
+            arg=run_id,
+        )
+        expect(amount).to_have_value("198")
+        expect(total).to_have_value("321")
+
+        page.get_by_role("button", name="この合計を取り込む").click()
+        expect(total).to_have_value("298")
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
+        page.reload()
+        expect(page.locator(".item-card").get_by_label("明細額（円）")).to_have_value("198")
+        expect(page.locator("#total-amount-yen")).to_have_value("298")
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         browser.close()
 

@@ -55,3 +55,15 @@ class Candidate:
     confidence: float
     needs_review: bool
     review_reasons: tuple[str, ...]
+    amount_yen: int | None = None
+    amount_source_text: str | None = None
+    amount_source_polygons: tuple[tuple[Point, ...], ...] = ()
+
+
+@dataclass(frozen=True)
+class TotalAmountCandidate:
+    id: str
+    total_amount_yen: int
+    raw_text: str
+    block_indexes: tuple[int, ...]
+    source_polygons: tuple[tuple[Point, ...], ...]

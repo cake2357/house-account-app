@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from house_account.domain.ocr import OcrBlock, OcrResult
-from house_account.ocr.extraction import extract_candidates
+from house_account.ocr.extraction import extract_candidates, extract_total_amount_candidates
 from house_account.ocr.serialization import result_from_dict
 from tests.conftest import make_block
 
@@ -101,6 +101,49 @@ def test_price_and_low_confidence_on_separate_blocks() -> None:
     assert [candidate.name for candidate in candidates] == ["パン", "パン"]
     assert candidates[0].review_reasons == ("low_confidence",)
     assert not candidates[1].needs_review
+
+
+def test_item_amount_is_extracted_only_as_integer_with_source_coordinates() -> None:
+    result = OcrResult(
+        (
+            make_block("牛乳", 0),
+            make_block("¥1,980", 0, x=300),
+            make_block("食料品割引 -20", 30),
+            make_block("パン 10.5", 60),
+        ),
+        {},
+        {},
+    )
+    milk, discount, fractional = extract_candidates(result)
+    assert milk.amount_yen == 1980
+    assert milk.amount_source_text == "牛乳 ¥1,980"
+    assert milk.amount_source_polygons == (
+        result.blocks[0].polygon,
+        result.blocks[1].polygon,
+    )
+    assert discount.amount_yen == -20
+    assert fractional.amount_yen is None
+    assert fractional.needs_review
+    assert fractional.review_reasons == ("amount_not_integer",)
+
+
+def test_total_amount_candidates_retain_raw_text_and_polygons() -> None:
+    result = OcrResult(
+        (
+            make_block("合計 ¥1,980", 0),
+            make_block("総計 1980円", 30),
+            make_block("小計 ¥2,000", 60),
+            make_block("合計 ¥-1", 90),
+            make_block("合計 1,980.5", 120),
+        ),
+        {},
+        {},
+    )
+    candidates = extract_total_amount_candidates(result)
+    assert [candidate.total_amount_yen for candidate in candidates] == [1980, 1980]
+    assert candidates[0].raw_text == "合計 ¥1,980"
+    assert candidates[0].block_indexes == (0,)
+    assert candidates[0].source_polygons == (result.blocks[0].polygon,)
 
 
 def test_empty_result_is_successfully_empty() -> None:

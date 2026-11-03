@@ -40,6 +40,9 @@
     [...document.querySelectorAll(".editor-column input, .editor-column select, .editor-column button, .save-bar button")]
       .forEach((control) => { control.disabled = editorDisabled; });
     addCandidatesButton.disabled = editorDisabled || !(detail?.last_successful_run?.candidates?.length);
+    document.querySelectorAll(".total-amount-import").forEach((button) => {
+      button.disabled = editorDisabled;
+    });
     document.querySelector("#rerun-ocr").disabled = !initialized || rerunningOcr;
     document.querySelector("#delete-receipt").disabled = !initialized;
   }
@@ -381,11 +384,37 @@
     candidates.forEach((candidate) => {
       const row = document.createElement("li");
       const name = document.createElement("span");
-      name.textContent = candidate.name;
+      name.textContent = candidate.amount_yen == null
+        ? candidate.name
+        : `${candidate.name} ・ ${candidate.amount_yen.toLocaleString("ja-JP")}円`;
       const review = document.createElement("small");
       review.textContent = candidate.needs_review ? "要確認" : "";
       row.append(name, review);
       candidateList.append(row);
+    });
+    const totalCandidates = successRun?.total_amount_candidates || [];
+    const totalPanel = document.querySelector("#total-candidate-panel");
+    const totalList = document.querySelector("#total-candidate-list");
+    totalPanel.hidden = totalCandidates.length === 0;
+    totalList.replaceChildren();
+    totalCandidates.forEach((candidate) => {
+      const row = document.createElement("li");
+      const source = document.createElement("span");
+      source.textContent = `${candidate.total_amount_yen.toLocaleString("ja-JP")}円 ・ 原文: ${candidate.raw_text}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button button-secondary button-small total-amount-import";
+      button.textContent = "この合計を取り込む";
+      button.title = `OCR座標: ${JSON.stringify(candidate.source_polygons || [])}`;
+      button.addEventListener("click", () => {
+        if (saving || !initialized) return;
+        totalAmountInput.value = String(candidate.total_amount_yen);
+        updateAmountSummary();
+        setDirty();
+        totalAmountInput.focus();
+      });
+      row.append(source, button);
+      totalList.append(row);
     });
     document.querySelector("#ocr-raw").textContent =
       latestRun?.raw?.raw_text || successRun?.raw?.raw_text || "原文はありません。";
@@ -548,6 +577,7 @@
       if (existing.has(key)) return;
       createItem({
         name: candidate.name,
+        amount_yen: candidate.amount_yen ?? null,
         source_run_id: run.id,
         source_candidate_id: candidate.id,
         tag_ids: [],

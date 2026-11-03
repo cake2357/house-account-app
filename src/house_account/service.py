@@ -173,11 +173,22 @@ class ReceiptService:
         if row is None:
             return None
         result = dict(row)
-        for field in ("raw_json", "candidates_json"):
-            result[field.removesuffix("_json")] = (
-                json.loads(result[field]) if result[field] is not None else None
-            )
-            del result[field]
+        raw = json.loads(result["raw_json"]) if result["raw_json"] is not None else None
+        stored_candidates = (
+            json.loads(result["candidates_json"]) if result["candidates_json"] is not None else None
+        )
+        if isinstance(stored_candidates, dict):
+            candidates = stored_candidates.get("candidates", [])
+            total_candidates = stored_candidates.get("total_amount_candidates", [])
+        else:
+            # 旧形式は明細候補の配列だけを保存している。
+            candidates = stored_candidates
+            total_candidates = []
+        result["raw"] = raw
+        result["candidates"] = candidates
+        result["total_amount_candidates"] = total_candidates
+        del result["raw_json"]
+        del result["candidates_json"]
         return result
 
     def save_items(
@@ -393,9 +404,13 @@ class ReceiptService:
                             "OCR候補の参照が不正です。",
                             {"items": "候補を選び直してください。"},
                         )
-                    candidate_ids = {
-                        candidate["id"] for candidate in json.loads(run["candidates_json"] or "[]")
-                    }
+                    stored_candidates = json.loads(run["candidates_json"] or "[]")
+                    item_candidates = (
+                        stored_candidates.get("candidates", [])
+                        if isinstance(stored_candidates, dict)
+                        else stored_candidates
+                    )
+                    candidate_ids = {candidate["id"] for candidate in item_candidates}
                     if item["source_candidate_id"] not in candidate_ids:
                         raise AppError(
                             422,
@@ -564,16 +579,26 @@ class ReceiptService:
         run_id: str,
         status: str,
         candidates: list[dict[str, Any]] | None = None,
+        total_amount_candidates: list[dict[str, Any]] | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
     ) -> None:
+        candidates_json: str | None = None
+        if candidates is not None:
+            payload: list[dict[str, Any]] | dict[str, Any] = candidates
+            if total_amount_candidates is not None:
+                payload = {
+                    "candidates": candidates,
+                    "total_amount_candidates": total_amount_candidates,
+                }
+            candidates_json = json.dumps(payload, ensure_ascii=False)
         with connect(self.database_path) as connection, transaction(connection):
             connection.execute(
                 "UPDATE ocr_runs SET status=?, candidates_json=?, error_code=?, error_message=?, "
                 "completed_at=? WHERE id=? AND status='running'",
                 (
                     status,
-                    json.dumps(candidates, ensure_ascii=False) if candidates is not None else None,
+                    candidates_json,
                     error_code,
                     error_message,
                     now_iso(),
