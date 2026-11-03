@@ -78,14 +78,16 @@ class ReceiptService:
     def get_receipt(self, receipt_id: str) -> dict[str, Any]:
         with connect(self.database_path) as connection:
             receipt = connection.execute(
-                "SELECT id, status, revision, created_at, updated_at, image_name, store_tag_id "
+                "SELECT id, status, revision, created_at, updated_at, image_name, store_tag_id, "
+                "total_amount_yen "
                 "FROM receipts WHERE id=?",
                 (receipt_id,),
             ).fetchone()
             if receipt is None:
                 raise not_found()
             items = connection.execute(
-                "SELECT i.id, i.name, i.position, i.source_run_id, i.source_candidate_id "
+                "SELECT i.id, i.name, i.position, i.source_run_id, i.source_candidate_id, "
+                "i.amount_yen "
                 "FROM receipt_items i WHERE i.receipt_id=? ORDER BY i.position",
                 (receipt_id,),
             ).fetchall()
@@ -186,6 +188,9 @@ class ReceiptService:
         items: list[dict[str, Any]],
         store_tag_id: str | None = None,
         store_tag_provided: bool = False,
+        total_amount_yen: int | None = None,
+        total_amount_provided: bool = False,
+        item_amount_provided: list[bool] | None = None,
     ) -> dict[str, Any]:
         if status not in {"draft", "confirmed"}:
             raise AppError(
@@ -212,6 +217,7 @@ class ReceiptService:
         seen_ids: set[str] = set()
         seen_candidates: set[tuple[str, str]] = set()
         all_tag_ids: set[str] = set()
+        amount_flags = item_amount_provided or [False] * len(items)
         for index, item in enumerate(items):
             name = str(item.get("name", "")).strip()
             if not 1 <= len(name) <= 200:
@@ -249,6 +255,19 @@ class ReceiptService:
                     {f"items.{index}.tag_ids": "タグを確認してください。"},
                 )
             all_tag_ids.update(tag_ids)
+            amount_yen = item.get("amount_yen")
+            amount_provided = amount_flags[index]
+            if (
+                amount_provided
+                and amount_yen is not None
+                and (not isinstance(amount_yen, int) or isinstance(amount_yen, bool))
+            ):
+                raise AppError(
+                    422,
+                    "validation_error",
+                    "明細額は円単位の整数で入力してください。",
+                    {f"items.{index}.amount_yen": "整数を入力してください。"},
+                )
             source_run_id = item.get("source_run_id")
             source_candidate_id = item.get("source_candidate_id")
             if (source_run_id is None) != (source_candidate_id is None):
@@ -273,13 +292,16 @@ class ReceiptService:
                     "id": item_id or str(uuid.uuid4()),
                     "name": name,
                     "tag_ids": tag_ids,
+                    "amount_yen": amount_yen,
+                    "amount_yen_provided": amount_provided,
                     "source_run_id": source_run_id,
                     "source_candidate_id": source_candidate_id,
                 }
             )
         with connect(self.database_path) as connection, transaction(connection):
             receipt = connection.execute(
-                "SELECT revision, store_tag_id FROM receipts WHERE id=?", (receipt_id,)
+                "SELECT revision, store_tag_id, total_amount_yen FROM receipts WHERE id=?",
+                (receipt_id,),
             ).fetchone()
             if receipt is None:
                 raise not_found()
@@ -289,6 +311,20 @@ class ReceiptService:
                     "revision_conflict",
                 )
             selected_store_tag_id = store_tag_id if store_tag_provided else receipt["store_tag_id"]
+            selected_total_amount_yen = (
+                total_amount_yen if total_amount_provided else receipt["total_amount_yen"]
+            )
+            if selected_total_amount_yen is not None and (
+                not isinstance(selected_total_amount_yen, int)
+                or isinstance(selected_total_amount_yen, bool)
+                or selected_total_amount_yen < 0
+            ):
+                raise AppError(
+                    422,
+                    "validation_error",
+                    "レシート合計は0円以上の整数で入力してください。",
+                    {"total_amount_yen": "0以上の整数を入力してください。"},
+                )
             existing_ids = {
                 row[0]
                 for row in connection.execute(
@@ -302,6 +338,15 @@ class ReceiptService:
                     "このレシートの明細ではありません。",
                     {"items": "画面を再読み込みしてください。"},
                 )
+            existing_amounts = {
+                row["id"]: row["amount_yen"]
+                for row in connection.execute(
+                    "SELECT id, amount_yen FROM receipt_items WHERE receipt_id=?", (receipt_id,)
+                )
+            }
+            for item in prepared:
+                if not item["amount_yen_provided"]:
+                    item["amount_yen"] = existing_amounts.get(item["id"])
             if all_tag_ids:
                 placeholders = ",".join("?" for _ in all_tag_ids)
                 found_tags = connection.execute(
@@ -361,8 +406,8 @@ class ReceiptService:
             connection.execute("DELETE FROM receipt_items WHERE receipt_id=?", (receipt_id,))
             for position, item in enumerate(prepared):
                 connection.execute(
-                    "INSERT INTO receipt_items(id, receipt_id, position, name, source_run_id, source_candidate_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO receipt_items(id, receipt_id, position, name, source_run_id, source_candidate_id, amount_yen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         item["id"],
                         receipt_id,
@@ -370,6 +415,7 @@ class ReceiptService:
                         item["name"],
                         item["source_run_id"],
                         item["source_candidate_id"],
+                        item["amount_yen"],
                     ),
                 )
                 connection.executemany(
@@ -380,8 +426,16 @@ class ReceiptService:
             new_revision = revision + 1
             now = now_iso()
             connection.execute(
-                "UPDATE receipts SET status=?, revision=?, updated_at=?, store_tag_id=? WHERE id=?",
-                (status, new_revision, now, selected_store_tag_id, receipt_id),
+                "UPDATE receipts SET status=?, revision=?, updated_at=?, store_tag_id=?, "
+                "total_amount_yen=? WHERE id=?",
+                (
+                    status,
+                    new_revision,
+                    now,
+                    selected_store_tag_id,
+                    selected_total_amount_yen,
+                    receipt_id,
+                ),
             )
         return self.get_receipt(receipt_id)
 

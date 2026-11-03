@@ -339,6 +339,96 @@ def test_store_tags_apply_to_every_item_and_preserve_product_tags(
         assert client.delete(f"/api/store-tags/{store_tag['id']}").status_code == 204
 
 
+def test_receipt_amounts_distinguish_missing_zero_and_negative_and_preserve_omitted_values(
+    settings: Settings, image_bytes: bytes, fixture_dir: Path
+) -> None:
+    with TestClient(
+        create_app(settings, FixedOcr(fixture_dir)), base_url="http://127.0.0.1"
+    ) as client:
+        receipt_id = upload(client, image_bytes)
+        wait_for_run(client, receipt_id)
+        saved = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 0,
+                "status": "draft",
+                "total_amount_yen": 0,
+                "items": [
+                    {"name": "無料商品", "amount_yen": 0},
+                    {"name": "値引き", "amount_yen": -135},
+                ],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["total_amount_yen"] == 0
+        assert [item["amount_yen"] for item in saved.json()["items"]] == [0, -135]
+
+        preserved = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 1,
+                "status": "draft",
+                "items": [
+                    {"id": item["id"], "name": item["name"], "tag_ids": item["tag_ids"]}
+                    for item in saved.json()["items"]
+                ],
+            },
+        )
+        assert preserved.status_code == 200, preserved.text
+        assert preserved.json()["total_amount_yen"] == 0
+        assert [item["amount_yen"] for item in preserved.json()["items"]] == [0, -135]
+
+        cleared = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 2,
+                "status": "draft",
+                "total_amount_yen": None,
+                "items": [
+                    {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "tag_ids": item["tag_ids"],
+                        **({"amount_yen": None} if index == 0 else {}),
+                    }
+                    for index, item in enumerate(preserved.json()["items"])
+                ],
+            },
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["total_amount_yen"] is None
+        assert [item["amount_yen"] for item in cleared.json()["items"]] == [None, -135]
+
+        invalid_fraction = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 3,
+                "status": "draft",
+                "items": [
+                    {"id": item["id"], "name": item["name"], "amount_yen": 1.5}
+                    for item in cleared.json()["items"]
+                ],
+            },
+        )
+        assert invalid_fraction.status_code == 422
+        invalid_total = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 3,
+                "status": "draft",
+                "total_amount_yen": -1,
+                "items": [
+                    {"id": item["id"], "name": item["name"], "tag_ids": item["tag_ids"]}
+                    for item in cleared.json()["items"]
+                ],
+            },
+        )
+        assert invalid_total.status_code == 422
+        latest = client.get(f"/api/receipts/{receipt_id}").json()
+        assert latest["total_amount_yen"] is None
+        assert [item["amount_yen"] for item in latest["items"]] == [None, -135]
+
+
 def test_image_validation_and_uniform_errors(
     settings: Settings, image_bytes: bytes, fixture_dir: Path
 ) -> None:
@@ -523,14 +613,23 @@ def test_migration_is_idempotent(settings: Settings) -> None:
             "INSERT INTO receipts(id, image_name, ocr_image_name, created_at, updated_at) "
             "VALUES ('receipt', 'old.png', 'old.jpg', 'test', 'test')"
         )
+        connection.execute(
+            "INSERT INTO receipt_items(id, receipt_id, position, name) "
+            "VALUES ('item', 'receipt', 0, '旧明細')"
+        )
     initialize(settings.database_path)
     initialize(settings.database_path)
     with connect(settings.database_path) as connection:
         versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations")]
         legacy_tag = connection.execute("SELECT is_store FROM tags WHERE id='legacy'").fetchone()
         legacy_receipt = connection.execute(
-            "SELECT store_tag_id FROM receipts WHERE id='receipt'"
+            "SELECT store_tag_id, total_amount_yen FROM receipts WHERE id='receipt'"
         ).fetchone()
-    assert versions == [1, 2]
+        legacy_item = connection.execute(
+            "SELECT amount_yen FROM receipt_items WHERE id='item'"
+        ).fetchone()
+    assert versions == [1, 2, 3]
     assert legacy_tag["is_store"] == 0
     assert legacy_receipt["store_tag_id"] is None
+    assert legacy_receipt["total_amount_yen"] is None
+    assert legacy_item["amount_yen"] is None

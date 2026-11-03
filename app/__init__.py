@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from house_account.config import Settings
@@ -32,6 +32,7 @@ class ItemPayload(BaseModel):
     id: str | None = None
     name: str = Field(min_length=1, max_length=200)
     tag_ids: list[str] = Field(default_factory=list, max_length=20)
+    amount_yen: StrictInt | None = None
     source_run_id: str | None = None
     source_candidate_id: str | None = None
 
@@ -43,6 +44,7 @@ class SaveItemsPayload(BaseModel):
     status: str
     items: list[ItemPayload] = Field(max_length=200)
     store_tag_id: str | None = None
+    total_amount_yen: StrictInt | None = None
 
 
 class TagPayload(BaseModel):
@@ -249,6 +251,9 @@ def create_app(
             [item.model_dump() for item in payload.items],
             payload.store_tag_id,
             "store_tag_id" in payload.model_fields_set,
+            payload.total_amount_yen,
+            "total_amount_yen" in payload.model_fields_set,
+            ["amount_yen" in item.model_fields_set for item in payload.items],
         )
 
     @application.get("/api/tags")

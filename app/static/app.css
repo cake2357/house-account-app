@@ -127,6 +127,12 @@ summary { cursor: pointer; color: var(--ink); font-size: 13px; font-weight: 700;
 .editor-heading { margin-bottom: 11px; }
 .item-list { display: grid; gap: 10px; }
 .item-card { padding: 13px; }
+.receipt-amount-editor { display: grid; gap: 6px; margin: 0 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.receipt-amount-editor > label, .item-amount-label { color: var(--muted); font-size: 11px; font-weight: 650; }
+.receipt-amount-editor > input, .item-amount-label input { min-width: 0; height: 38px; padding: 0 9px; border: 1px solid #d8e1dc; border-radius: 8px; color: var(--ink); background: #fff; font-size: 13px; }
+.receipt-amount-editor > p { margin: 0; color: var(--muted); font-size: 11px; }
+.item-amount-label { width: 112px; flex: 0 0 112px; display: grid; gap: 5px; }
+.item-amount-label input { width: 100%; height: 42px; }
 .item-error { margin: 8px 0 0; color: var(--red); font-size: 11px; }
 .item-error[hidden] { display: none; }
 .store-tag-editor { display: grid; gap: 6px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }

@@ -221,6 +221,46 @@ def test_store_tag_management_and_receipt_wide_assignment(app_url: str, fixture_
         browser.close()
 
 
+def test_manual_amounts_validate_show_difference_and_persist(
+    app_url: str, fixture_dir: Path
+) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.get_by_label("商品名").fill("無料商品")
+        page.locator(".item-card").nth(0).get_by_label("明細額（円）").fill("0")
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.locator(".item-card").nth(1).get_by_label("商品名").fill("値引き")
+        amount = page.locator(".item-card").nth(1).get_by_label("明細額（円）")
+        amount.fill("12.5")
+        page.get_by_label("レシート合計（円）").fill("0")
+        expect(page.locator("#amount-summary")).to_have_text(
+            "金額は円単位の整数で入力してください。"
+        )
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-error")).to_have_text("明細額は円単位の整数で入力してください。")
+        expect(amount).to_have_value("12.5")
+
+        amount.fill("-100")
+        expect(page.locator("#amount-summary")).to_have_text(
+            "明細合計 -100円 ・ 差額（合計−明細） +100円"
+        )
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
+        page.reload()
+        expect(page.locator(".item-card").nth(0).get_by_label("明細額（円）")).to_have_value("0")
+        expect(page.locator(".item-card").nth(1).get_by_label("明細額（円）")).to_have_value("-100")
+        expect(page.get_by_label("レシート合計（円）")).to_have_value("0")
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
 def test_receipt_editing_waits_for_initial_detail_load(app_url: str, fixture_dir: Path) -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
