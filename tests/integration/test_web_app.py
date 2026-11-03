@@ -234,6 +234,111 @@ def test_manual_tags_revision_conflicts_and_receipt_scoping(
         assert client.get(f"/api/receipts/{other_id}").json()["items"] == []
 
 
+def test_store_tags_apply_to_every_item_and_preserve_product_tags(
+    settings: Settings, image_bytes: bytes, fixture_dir: Path
+) -> None:
+    with TestClient(
+        create_app(settings, FixedOcr(fixture_dir)), base_url="http://127.0.0.1"
+    ) as client:
+        receipt_id = upload(client, image_bytes)
+        wait_for_run(client, receipt_id)
+        product_tag = client.post("/api/tags", json={"name": "食品"}).json()
+        store_tag = client.post("/api/tags", json={"name": "青果店", "is_store": True}).json()
+        other_store_tag = client.post("/api/tags", json={"name": "駅前店", "is_store": True}).json()
+
+        assert store_tag["id"] in {
+            item["id"]
+            for item in client.get("/api/tags", params={"is_store": True}).json()["items"]
+        }
+        assert client.get("/api/tags", params={"is_store": False}).json()["items"] == [
+            {"id": product_tag["id"], "name": "食品"}
+        ]
+        assert len(client.get("/api/tags", params={"is_store": True}).json()["items"]) == 2
+
+        saved = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 0,
+                "status": "draft",
+                "store_tag_id": store_tag["id"],
+                "items": [
+                    {"id": None, "name": "りんご", "tag_ids": [product_tag["id"]]},
+                    {"id": None, "name": "みかん", "tag_ids": []},
+                ],
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["store_tag"] == {"id": store_tag["id"], "name": "青果店"}
+        assert [item["tags"] for item in saved.json()["items"]] == [
+            [{"id": product_tag["id"], "name": product_tag["name"]}],
+            [],
+        ]
+
+        omitted_store = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 1,
+                "status": "draft",
+                "items": [
+                    {"id": item["id"], "name": item["name"], "tag_ids": item["tag_ids"]}
+                    for item in saved.json()["items"]
+                ],
+            },
+        )
+        assert omitted_store.json()["store_tag"]["id"] == store_tag["id"]
+
+        renamed = client.patch(f"/api/store-tags/{store_tag['id']}", json={"name": "青果市場"})
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "青果市場"
+        in_use = client.delete(f"/api/store-tags/{store_tag['id']}")
+        assert in_use.status_code == 409
+        assert in_use.json()["error"]["code"] == "store_tag_in_use"
+
+        changed = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 2,
+                "status": "draft",
+                "store_tag_id": other_store_tag["id"],
+                "items": [
+                    {"id": item["id"], "name": item["name"], "tag_ids": item["tag_ids"]}
+                    for item in saved.json()["items"]
+                ],
+            },
+        )
+        assert changed.status_code == 200, changed.text
+        with connect(settings.database_path) as connection:
+            assigned = connection.execute(
+                "SELECT t.id FROM receipt_items i JOIN item_tags it ON it.item_id=i.id "
+                "JOIN tags t ON t.id=it.tag_id WHERE i.receipt_id=? AND t.is_store=1 "
+                "ORDER BY i.position",
+                (receipt_id,),
+            ).fetchall()
+        assert [row[0] for row in assigned] == [other_store_tag["id"], other_store_tag["id"]]
+        assert changed.json()["items"][0]["tags"] == [
+            {"id": product_tag["id"], "name": product_tag["name"]}
+        ]
+
+        cleared = client.put(
+            f"/api/receipts/{receipt_id}/items",
+            json={
+                "revision": 3,
+                "status": "draft",
+                "store_tag_id": None,
+                "items": [
+                    {"id": item["id"], "name": item["name"], "tag_ids": item["tag_ids"]}
+                    for item in changed.json()["items"]
+                ],
+            },
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["store_tag"] is None
+        assert cleared.json()["items"][0]["tags"] == [
+            {"id": product_tag["id"], "name": product_tag["name"]}
+        ]
+        assert client.delete(f"/api/store-tags/{store_tag['id']}").status_code == 204
+
+
 def test_image_validation_and_uniform_errors(
     settings: Settings, image_bytes: bytes, fixture_dir: Path
 ) -> None:
@@ -397,8 +502,35 @@ def test_save_transaction_rolls_back_all_items_on_insert_failure(
 
 
 def test_migration_is_idempotent(settings: Settings) -> None:
+    with connect(settings.database_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        for statement in (
+            Path(__file__)
+            .parents[2]
+            .joinpath("src/house_account/migrations/001_initial.sql")
+            .read_text(encoding="utf-8")
+            .split(";")
+        ):
+            if statement.strip():
+                connection.execute(statement)
+        connection.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (1, 'test')")
+        connection.execute(
+            "INSERT INTO tags(id, name, normalized_name, created_at) VALUES ('legacy', '食品', '食品', 'test')"
+        )
+        connection.execute(
+            "INSERT INTO receipts(id, image_name, ocr_image_name, created_at, updated_at) "
+            "VALUES ('receipt', 'old.png', 'old.jpg', 'test', 'test')"
+        )
     initialize(settings.database_path)
     initialize(settings.database_path)
     with connect(settings.database_path) as connection:
         versions = [row[0] for row in connection.execute("SELECT version FROM schema_migrations")]
-    assert versions == [1]
+        legacy_tag = connection.execute("SELECT is_store FROM tags WHERE id='legacy'").fetchone()
+        legacy_receipt = connection.execute(
+            "SELECT store_tag_id FROM receipts WHERE id='receipt'"
+        ).fetchone()
+    assert versions == [1, 2]
+    assert legacy_tag["is_store"] == 0
+    assert legacy_receipt["store_tag_id"] is None

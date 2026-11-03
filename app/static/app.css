@@ -129,6 +129,18 @@ summary { cursor: pointer; color: var(--ink); font-size: 13px; font-weight: 700;
 .item-card { padding: 13px; }
 .item-error { margin: 8px 0 0; color: var(--red); font-size: 11px; }
 .item-error[hidden] { display: none; }
+.store-tag-editor { display: grid; gap: 6px; margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.store-tag-editor > label, .store-tag-management-body > label { color: var(--muted); font-size: 11px; font-weight: 650; }
+.store-tag-editor select, .store-tag-management-body input, .store-tag-management-body select { min-width: 0; height: 38px; padding: 0 9px; border: 1px solid #d8e1dc; border-radius: 8px; background: #fff; font-size: 12px; }
+.store-tag-hint { margin: 0; color: var(--muted); font-size: 10px; }
+.store-tag-management { padding-top: 3px; }
+.store-tag-management > summary { font-size: 11px; }
+.store-tag-management-body { display: grid; gap: 7px; margin-top: 9px; }
+.store-tag-create-row { display: flex; gap: 6px; }
+.store-tag-create-row input { flex: 1; }
+.store-tag-create-row .button { flex: 0 0 auto; }
+.store-tag-chip { display: inline-flex; align-items: center; padding: 4px 7px; border: 1px solid #e9dcc0; border-radius: 999px; color: #72531c; background: #fff7e6; font-size: 10px; }
+.store-tag-chip[hidden] { display: none; }
 .item-topline { display: flex; align-items: end; gap: 8px; }
 .item-name-label { min-width: 0; flex: 1; display: grid; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 650; }
 .item-name-label input { min-width: 0; width: 100%; height: 42px; padding: 0 11px; border: 1px solid #d8e1dc; border-radius: 9px; color: var(--ink); background: #fff; font-size: 14px; }

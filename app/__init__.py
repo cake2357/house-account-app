@@ -42,9 +42,17 @@ class SaveItemsPayload(BaseModel):
     revision: int = Field(ge=0)
     status: str
     items: list[ItemPayload] = Field(max_length=200)
+    store_tag_id: str | None = None
 
 
 class TagPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    is_store: bool = False
+
+
+class StoreTagNamePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=80)
@@ -239,15 +247,28 @@ def create_app(
             payload.revision,
             payload.status,
             [item.model_dump() for item in payload.items],
+            payload.store_tag_id,
+            "store_tag_id" in payload.model_fields_set,
         )
 
     @application.get("/api/tags")
-    async def list_tags(q: str = Query(default="", max_length=100)) -> dict[str, Any]:
-        return {"items": service.list_tags(q)}
+    async def list_tags(
+        q: str = Query(default="", max_length=100), is_store: bool | None = None
+    ) -> dict[str, Any]:
+        return {"items": service.list_tags(q, is_store)}
 
     @application.post("/api/tags", status_code=201)
-    async def create_tag(payload: TagPayload) -> dict[str, str]:
-        return service.create_tag(payload.name)
+    async def create_tag(payload: TagPayload) -> dict[str, Any]:
+        return service.create_tag(payload.name, payload.is_store)
+
+    @application.patch("/api/store-tags/{tag_id}")
+    async def rename_store_tag(tag_id: str, payload: StoreTagNamePayload) -> dict[str, Any]:
+        return service.rename_store_tag(tag_id, payload.name)
+
+    @application.delete("/api/store-tags/{tag_id}", status_code=204)
+    async def delete_store_tag(tag_id: str) -> Response:
+        service.delete_store_tag(tag_id)
+        return Response(status_code=204)
 
     @application.delete("/api/receipts/{receipt_id}", status_code=204)
     async def delete_receipt(receipt_id: str, revision: int = Query(ge=0)) -> Response:

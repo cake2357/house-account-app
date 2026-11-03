@@ -59,9 +59,36 @@
         </div>
         <button id="add-item" class="button button-secondary button-small" type="button" disabled>＋ 明細を追加</button>
       </div>
+      <section class="store-tag-editor" aria-labelledby="store-tag-heading">
+        <label for="store-tag-select" id="store-tag-heading">店舗タグ</label>
+        <select id="store-tag-select" disabled>
+          <option value="">選択しない</option>
+        </select>
+        <p class="store-tag-hint">選ぶと、このレシートの全明細に反映されます。</p>
+        <details class="store-tag-management">
+          <summary>店舗タグを管理</summary>
+          <div class="store-tag-management-body">
+            <label for="new-store-tag-name">新しい店舗名</label>
+            <div class="store-tag-create-row">
+              <input id="new-store-tag-name" type="text" maxlength="40" autocomplete="off">
+              <button id="create-store-tag" class="button button-secondary button-small" type="button">登録</button>
+            </div>
+            <label for="manage-store-tag">登録済み店舗タグ</label>
+            <select id="manage-store-tag">
+              <option value="">店舗タグを選択</option>
+            </select>
+            <label for="rename-store-tag-name">新しい名前</label>
+            <div class="store-tag-create-row">
+              <input id="rename-store-tag-name" type="text" maxlength="40" autocomplete="off">
+              <button id="rename-store-tag" class="button button-secondary button-small" type="button">改名</button>
+            </div>
+            <button id="delete-store-tag" class="button button-danger button-small" type="button">選択したタグを削除</button>
+          </div>
+        </details>
+      </section>
       <div id="item-list" class="item-list"></div>
       <p id="items-empty" class="muted items-empty" hidden>明細がありません。商品を手入力できます。</p>
-      <p class="editor-note">商品名は画像を見ながら確認してください。タグは選んだ明細にだけ付きます。</p>
+      <p class="editor-note">商品名は画像を見ながら確認してください。商品タグは選んだ明細にだけ付きます。</p>
     </section>
   </div>
 

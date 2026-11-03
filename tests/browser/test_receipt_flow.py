@@ -170,6 +170,57 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         browser.close()
 
 
+def test_store_tag_management_and_receipt_wide_assignment(app_url: str, fixture_dir: Path) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.set_default_timeout(5_000)
+        page.goto(app_url)
+        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
+        page.get_by_role("button", name="登録する").click()
+        page.wait_for_url("**/receipts/*", timeout=5_000)
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.get_by_label("商品名").fill("手入力の明細")
+
+        page.locator(".store-tag-management > summary").click()
+        page.get_by_label("新しい店舗名").fill("青果店")
+        page.get_by_role("button", name="登録", exact=True).click()
+        store_picker = page.locator("#store-tag-select")
+        expect(store_picker.locator("option")).to_have_count(2)
+        expect(store_picker).to_have_value("")
+        store_picker.select_option(label="青果店")
+        store_tag_id = store_picker.locator("option", has_text="青果店").get_attribute("value")
+        assert store_tag_id is not None
+        expect(page.locator(".item-card .store-tag-chip")).to_have_text("店舗: 青果店")
+
+        page.get_by_role("button", name="＋ 明細を追加").click()
+        page.locator(".item-card").nth(1).get_by_label("商品名").fill("後から追加")
+        expect(page.locator(".item-card .store-tag-chip").nth(1)).to_have_text("店舗: 青果店")
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
+        page.reload()
+        expect(store_picker).to_have_value(store_tag_id)
+        expect(page.locator(".item-card .store-tag-chip")).to_have_count(2)
+
+        page.locator(".store-tag-management > summary").click()
+        page.locator("#manage-store-tag").select_option(label="青果店")
+        page.get_by_label("新しい名前").fill("青果市場")
+        page.get_by_role("button", name="改名").click()
+        expect(page.locator(".item-card .store-tag-chip").first).to_have_text("店舗: 青果市場")
+
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.get_by_role("button", name="選択したタグを削除").click()
+        expect(page.locator("#save-error")).to_have_text("使用中の店舗タグは削除できません。")
+        store_picker.select_option("")
+        page.get_by_role("button", name="下書き保存").click()
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
+        page.locator("#manage-store-tag").select_option(label="青果市場")
+        page.get_by_role("button", name="選択したタグを削除").click()
+        expect(page.locator("#manage-store-tag option")).to_have_count(1)
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        browser.close()
+
+
 def test_receipt_editing_waits_for_initial_detail_load(app_url: str, fixture_dir: Path) -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
