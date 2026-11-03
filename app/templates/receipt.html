@@ -59,6 +59,11 @@
         </div>
         <button id="add-item" class="button button-secondary button-small" type="button" disabled>＋ 明細を追加</button>
       </div>
+      <section class="receipt-amount-editor" aria-labelledby="receipt-total-heading">
+        <label for="total-amount-yen" id="receipt-total-heading">レシート合計（円）</label>
+        <input id="total-amount-yen" type="text" inputmode="numeric" autocomplete="off" placeholder="未入力">
+        <p id="amount-summary" aria-live="polite">明細額を入力してください。</p>
+      </section>
       <section class="store-tag-editor" aria-labelledby="store-tag-heading">
         <label for="store-tag-select" id="store-tag-heading">店舗タグ</label>
         <select id="store-tag-select" disabled>

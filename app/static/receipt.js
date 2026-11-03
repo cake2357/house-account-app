@@ -12,6 +12,8 @@
   const storeTagSelect = document.querySelector("#store-tag-select");
   const storeTagManageSelect = document.querySelector("#manage-store-tag");
   const storeTagError = document.querySelector("#save-error");
+  const totalAmountInput = document.querySelector("#total-amount-yen");
+  const amountSummary = document.querySelector("#amount-summary");
   let storeTags = [];
   const addCandidatesButton = document.querySelector("#add-candidates");
   let detail;
@@ -44,6 +46,41 @@
 
   function updateEmptyState() {
     document.querySelector("#items-empty").hidden = list.children.length !== 0;
+  }
+
+  function formatYen(amount) {
+    return `${amount.toLocaleString("ja-JP")}円`;
+  }
+
+  function amountValue(input) {
+    const value = input.value.trim();
+    return value === "" ? null : Number(value);
+  }
+
+  function updateAmountSummary() {
+    const inputs = [...list.querySelectorAll("[name=item-amount]")];
+    const values = inputs.map(amountValue);
+    const hasInvalidItem = inputs.some((input, index) => (
+      input.value.trim() !== "" && (!/^-?\d+$/.test(input.value.trim()) || !Number.isSafeInteger(values[index]))
+    ));
+    const totalText = totalAmountInput.value.trim();
+    const hasInvalidTotal = totalText !== "" && (!/^\d+$/.test(totalText) || !Number.isSafeInteger(Number(totalText)));
+    if (hasInvalidItem || hasInvalidTotal) {
+      amountSummary.textContent = "金額は円単位の整数で入力してください。";
+      return;
+    }
+    if (values.length === 0 || values.some((value) => value === null)) {
+      amountSummary.textContent = "明細額に未入力あり";
+      return;
+    }
+    const subtotal = values.reduce((sum, value) => sum + value, 0);
+    if (totalText === "") {
+      amountSummary.textContent = `明細合計 ${formatYen(subtotal)} ・ レシート合計は未入力`;
+      return;
+    }
+    const difference = Number(totalText) - subtotal;
+    const differenceLabel = difference > 0 ? `+${formatYen(difference)}` : formatYen(difference);
+    amountSummary.textContent = `明細合計 ${formatYen(subtotal)} ・ 差額（合計−明細） ${differenceLabel}`;
   }
 
   function updateStoreTagRows() {
@@ -83,12 +120,13 @@
     list.querySelectorAll('[aria-invalid="true"]').forEach((input) => {
       input.removeAttribute("aria-invalid");
     });
+    totalAmountInput.removeAttribute("aria-invalid");
   }
 
   function showFieldErrors(fields = {}) {
     let firstInvalid = null;
     Object.entries(fields).forEach(([field, message]) => {
-      const match = field.match(/^items\.(\d+)\.(?:name|tag_ids|id)?$/);
+      const match = field.match(/^items\.(\d+)\.(?:name|tag_ids|id|amount_yen)?$/);
       if (!match) return;
       const row = list.children[Number(match[1])];
       if (!row) return;
@@ -97,7 +135,9 @@
       error.hidden = false;
       const target = field.endsWith(".name")
         ? row.querySelector("[name=item-name]")
-        : row.querySelector(".tag-picker > summary");
+        : field.endsWith(".amount_yen")
+          ? row.querySelector("[name=item-amount]")
+          : row.querySelector(".tag-picker > summary");
       if (target) {
         target.setAttribute("aria-invalid", "true");
         firstInvalid ||= target;
@@ -215,6 +255,23 @@
     name.value = item.name || "";
     name.addEventListener("input", () => setDirty());
     nameLabel.append(nameTitle, name);
+    const amountLabel = document.createElement("label");
+    amountLabel.className = "item-amount-label";
+    const amountTitle = document.createElement("span");
+    amountTitle.textContent = "明細額（円）";
+    const amountInput = document.createElement("input");
+    amountInput.type = "text";
+    amountInput.name = "item-amount";
+    amountInput.inputMode = "decimal";
+    amountInput.maxLength = 17;
+    amountInput.autocomplete = "off";
+    amountInput.placeholder = "未入力";
+    amountInput.value = item.amount_yen == null ? "" : String(item.amount_yen);
+    amountInput.addEventListener("input", () => {
+      updateAmountSummary();
+      setDirty();
+    });
+    amountLabel.append(amountTitle, amountInput);
     const remove = document.createElement("button");
     remove.className = "icon-button remove-item";
     remove.type = "button";
@@ -223,9 +280,10 @@
     remove.addEventListener("click", () => {
       row.remove();
       updateEmptyState();
+      updateAmountSummary();
       setDirty();
     });
-    top.append(nameLabel, remove);
+    top.append(nameLabel, amountLabel, remove);
 
     const tagBar = document.createElement("div");
     tagBar.className = "tag-bar";
@@ -309,6 +367,7 @@
     list.append(row);
     updateSavingControls();
     updateEmptyState();
+    updateAmountSummary();
     return row;
   }
 
@@ -398,6 +457,7 @@
       tag_ids: row.dataset.tagIds ? row.dataset.tagIds.split(",") : [],
       source_run_id: row.dataset.sourceRunId || null,
       source_candidate_id: row.dataset.sourceCandidateId || null,
+      amount_yen: amountValue(row.querySelector("[name=item-amount]")),
     }));
   }
 
@@ -418,6 +478,24 @@
       invalid.addEventListener("input", () => invalid.setCustomValidity(""), { once: true });
       return;
     }
+    const amountInputs = [...list.querySelectorAll("[name=item-amount]")];
+    const invalidAmount = amountInputs.find((input) => {
+      const value = input.value.trim();
+      return value !== "" && (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value)));
+    });
+    if (invalidAmount) {
+      saveError.textContent = "明細額は円単位の整数で入力してください。";
+      invalidAmount.setAttribute("aria-invalid", "true");
+      invalidAmount.focus();
+      return;
+    }
+    const totalText = totalAmountInput.value.trim();
+    if (totalText !== "" && (!/^\d+$/.test(totalText) || !Number.isSafeInteger(Number(totalText)))) {
+      saveError.textContent = "レシート合計は0円以上の整数で入力してください。";
+      totalAmountInput.setAttribute("aria-invalid", "true");
+      totalAmountInput.focus();
+      return;
+    }
     saving = true;
     saveError.textContent = "";
     saveIndicator.textContent = "保存中";
@@ -430,6 +508,7 @@
           revision: detail.revision,
           status,
           store_tag_id: detail.store_tag_id,
+          total_amount_yen: totalText === "" ? null : Number(totalText),
           items: collectItems(),
         }),
       });
@@ -549,11 +628,13 @@
     detail = await request(`/api/receipts/${encodeURIComponent(receiptId)}`);
     detail.store_tag_id = detail.store_tag?.id || null;
     await loadStoreTags();
+    totalAmountInput.value = detail.total_amount_yen == null ? "" : String(detail.total_amount_yen);
     document.querySelector("#receipt-meta").textContent = `${formatDate(detail.created_at)} ・ ${statusLabel(detail.status)}`;
     const imageUrl = `/api/receipts/${encodeURIComponent(receiptId)}/image`;
     document.querySelector("#receipt-image").src = imageUrl;
     document.querySelector("#image-link").href = imageUrl;
     detail.items.forEach(createItem);
+    updateAmountSummary();
     updateEmptyState();
     renderOcrState(detail.latest_run);
     if (detail.latest_run && ["queued", "running"].includes(detail.latest_run.status)) {
@@ -572,6 +653,11 @@
   storeTagSelect.addEventListener("change", () => {
     detail.store_tag_id = storeTagSelect.value || null;
     updateStoreTagRows();
+    setDirty();
+  });
+
+  totalAmountInput.addEventListener("input", () => {
+    updateAmountSummary();
     setDirty();
   });
 
