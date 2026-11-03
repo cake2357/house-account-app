@@ -256,7 +256,7 @@ def test_manual_amounts_validate_show_difference_and_persist(
         page.reload()
         expect(page.locator(".item-card").nth(0).get_by_label("明細額（円）")).to_have_value("0")
         expect(page.locator(".item-card").nth(1).get_by_label("明細額（円）")).to_have_value("-100")
-        expect(page.get_by_label("レシート合計（円）")).to_have_value("0")
+        expect(page.locator("#total-amount-yen")).to_have_value("0")
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         browser.close()
 
