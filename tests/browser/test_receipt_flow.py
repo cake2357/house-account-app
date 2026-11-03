@@ -122,6 +122,14 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         select_tag(page, 0, "常温")
         first_row = page.locator(".item-card").nth(0)
         first_row.locator(".tag-picker summary").click()
+        first_row.get_by_role("button", name="閉じる").click()
+        expect(first_row.locator(".tag-picker")).not_to_have_attribute("open", "")
+        assert first_row.locator(".tag-picker summary").evaluate(
+            "element => document.activeElement === element"
+        )
+        expect(first_row.locator(".tag-chips")).to_contain_text("食品")
+        expect(first_row.locator(".tag-chips")).to_contain_text("常温")
+        first_row.locator(".tag-picker summary").click()
         menu = first_row.locator(".tag-menu")
         expect(menu).to_be_visible()
         bounds = first_row.evaluate(
@@ -144,7 +152,7 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         expect(page.locator(".item-card").nth(1).locator(".tag-chips")).to_contain_text("手入力")
 
         page.get_by_role("button", name="確認して保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         page.reload()
         expect(page.locator(".item-card")).to_have_count(2)
@@ -155,7 +163,7 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).to_contain_text("常温")
         page.get_by_role("button", name="常温を解除").click()
         page.get_by_role("button", name="確認して保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         page.reload()
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).to_contain_text("食品")
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).not_to_contain_text("常温")
@@ -273,7 +281,7 @@ def test_saving_disables_candidate_addition_and_warns_before_unload(
               items: [{ id: "saved-item" }],
             })"""
         )
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         browser.close()
 
 
@@ -412,7 +420,7 @@ def test_tag_search_results_remain_disabled_while_saving(app_url: str, fixture_d
               items: [{ id: "saved-item" }],
             })"""
         )
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         expect(tag_checkbox).to_be_enabled()
         browser.close()
 
@@ -761,7 +769,7 @@ def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
         )
         assert page.evaluate("() => window.__rerunPostCount") == 1
         page.get_by_role("button", name="下書き保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         expect(rerun_button).to_be_disabled()
 
         page.evaluate("() => window.__releaseRunA()")
@@ -1122,11 +1130,11 @@ def test_confirming_unchanged_draft_warns_before_unload_while_saving(
         page.get_by_role("button", name="＋ 明細を追加").click()
         page.get_by_label("商品名").fill("保存済みの明細")
         page.get_by_role("button", name="下書き保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
 
         page.reload()
         expect(page.locator(".item-card")).to_have_count(1)
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         assert not page.evaluate(
             """() => {
               const event = new Event("beforeunload", { cancelable: true });
@@ -1171,7 +1179,7 @@ def test_confirming_unchanged_draft_warns_before_unload_while_saving(
         )
 
         page.evaluate("() => window.__releaseConfirmedSave()")
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         browser.close()
 
 
