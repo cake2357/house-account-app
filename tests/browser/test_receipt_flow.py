@@ -239,7 +239,7 @@ def test_manual_amounts_validate_show_difference_and_persist(
         page.locator(".item-card").nth(1).get_by_label("商品名").fill("値引き")
         amount = page.locator(".item-card").nth(1).get_by_label("明細額（円）")
         amount.fill("12.5")
-        page.get_by_label("レシート合計（円）").fill("0")
+        page.locator("#total-amount-yen").fill("0")
         expect(page.locator("#amount-summary")).to_have_text(
             "金額は円単位の整数で入力してください。"
         )
