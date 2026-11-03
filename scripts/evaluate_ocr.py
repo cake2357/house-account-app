@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from house_account.config import Settings
-from house_account.ocr.evaluation import recognize_for_evaluation, score_review_to_file
+from house_account.ocr.evaluation import INPUT_MODES, recognize_for_evaluation, score_review_to_file
 
 
 def main() -> None:
@@ -14,6 +14,7 @@ def main() -> None:
     recognize.add_argument("image", type=Path)
     recognize.add_argument("--output", type=Path, required=True)
     recognize.add_argument("--model-dir", type=Path, default=Settings.from_env().model_dir)
+    recognize.add_argument("--input-mode", choices=INPUT_MODES, default="current")
     score = commands.add_parser("score", help="人による対応付けを集計")
     score.add_argument("review", type=Path)
     score.add_argument("--output", type=Path, required=True)
@@ -25,6 +26,7 @@ def main() -> None:
                 args.image,
                 args.output,
                 Settings(settings.data_dir, args.model_dir.resolve()),
+                args.input_mode,
             )
         else:
             score_review_to_file(args.review, args.output)

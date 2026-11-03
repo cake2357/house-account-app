@@ -9,13 +9,38 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageOps
+
 from house_account.config import Settings
-from house_account.ocr.extraction import extract_candidates
+from house_account.ocr.extraction import extract_candidates, extract_total_amount_candidates
 from house_account.ocr.models import check_models
 from house_account.ocr.serialization import reserve_output, result_from_dict, write_json
 
+INPUT_MODES = ("current", "png", "grayscale_autocontrast")
 
-def recognize_for_evaluation(image_path: Path, output: Path, settings: Settings) -> None:
+
+def _prepare_evaluation_input(image_path: Path, mode: str, destination: Path) -> Path:
+    if mode not in INPUT_MODES:
+        raise ValueError(f"未対応のOCR入力モードです: {mode}")
+    if mode == "current":
+        return image_path
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source)
+        if mode == "grayscale_autocontrast":
+            prepared = ImageOps.autocontrast(image.convert("L"))
+        else:
+            prepared = image.copy()
+        prepared.save(destination, format="PNG", optimize=True)
+        prepared.close()
+    return destination
+
+
+def recognize_for_evaluation(
+    image_path: Path,
+    output: Path,
+    settings: Settings,
+    input_mode: str = "current",
+) -> None:
     """原文を先に記録し、抽出の失敗でも失わない。推論は子プロセスで制限する。"""
     check_models(settings.model_dir)
     reserve_output(output)
@@ -29,18 +54,24 @@ def recognize_for_evaluation(image_path: Path, output: Path, settings: Settings)
             "platform": platform.platform(),
             "machine": platform.machine(),
         },
+        "input_mode": input_mode,
         "candidates": [],
+        "total_amount_candidates": [],
     }
     write_json(output, record)
     with tempfile.TemporaryDirectory() as temporary:
-        raw_path = Path(temporary) / "raw.json"
+        temporary_path = Path(temporary)
+        raw_path = temporary_path / "raw.json"
         try:
+            ocr_input = _prepare_evaluation_input(
+                image_path, input_mode, temporary_path / "input.png"
+            )
             process = subprocess.run(
                 [
                     sys.executable,
                     "-m",
                     "house_account.ocr.worker",
-                    str(image_path.resolve()),
+                    str(ocr_input.resolve()),
                     "--model-dir",
                     str(settings.model_dir),
                     "--output",
@@ -59,8 +90,14 @@ def recognize_for_evaluation(image_path: Path, output: Path, settings: Settings)
             raw = json.loads(raw_path.read_text(encoding="utf-8"))
             record.update(status="recognized", raw=raw)
             write_json(output, record)
-            candidates = extract_candidates(result_from_dict(raw))
-            record.update(status="succeeded", candidates=[asdict(item) for item in candidates])
+            result = result_from_dict(raw)
+            candidates = extract_candidates(result)
+            total_candidates = extract_total_amount_candidates(result)
+            record.update(
+                status="succeeded",
+                candidates=[asdict(item) for item in candidates],
+                total_amount_candidates=[asdict(item) for item in total_candidates],
+            )
             write_json(output, record)
         except subprocess.TimeoutExpired as error:
             record.update(

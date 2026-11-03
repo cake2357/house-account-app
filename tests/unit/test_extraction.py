@@ -146,6 +146,16 @@ def test_total_amount_candidates_retain_raw_text_and_polygons() -> None:
     assert candidates[0].source_polygons == (result.blocks[0].polygon,)
 
 
+@pytest.mark.parametrize(
+    ("line", "amount"), [("合計/20点 ¥4,810", 4810), ("合計/25点 ￥5,449", 5449)]
+)
+def test_total_amount_candidates_accept_receipt_item_count(line: str, amount: int) -> None:
+    result = OcrResult((make_block(line, 0),), {}, {})
+    (candidate,) = extract_total_amount_candidates(result)
+    assert candidate.total_amount_yen == amount
+    assert extract_candidates(result) == ()
+
+
 def test_empty_result_is_successfully_empty() -> None:
     assert extract_candidates(OcrResult((), {}, {})) == ()
 
@@ -178,6 +188,36 @@ def test_item_section_keeps_unknown_lines_and_excludes_known_metadata() -> None:
     assert "広告文" in result.raw_text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "事業者番号 T6010801001974",
+        "東京都大田区大森西5-6-7",
+        "営業時間8:30〜21:30",
+        "オーケー 梅屋敷店",
+        "スNo00000068 佐川",
+        "レトN09",
+        "キレ0007 スキャンNo8269",
+        "本体価格の3%相当を割引",
+        "オーケークラブ会員で現金払に限り、食料品は",
+        "小計（税抜8%) ￥80",
+        "消費税等（8%） ￥6",
+        "電話：03-3768-9870 レツ#1",
+        "OK 高品質・Everyday Low Price",
+        "Price",
+        "LOw",
+    ],
+)
+def test_supplemental_receipt_metadata_is_excluded(text: str) -> None:
+    assert not extract_candidates(OcrResult((make_block(text, 0),), {}, {}))
+
+
+def test_discount_item_is_not_excluded_with_promotional_copy() -> None:
+    (candidate,) = extract_candidates(OcrResult((make_block("食料品割引 -20", 0),), {}, {}))
+    assert candidate.name == "食料品割引"
+    assert candidate.amount_yen == -20
+
+
 def test_first_item_with_quantity_price_on_next_line_is_kept() -> None:
     result = OcrResult(
         tuple(
@@ -187,9 +227,7 @@ def test_first_item_with_quantity_price_on_next_line_is_kept() -> None:
         {},
         {},
     )
-    header, candidate = extract_candidates(result)
-    assert header.name == "架空店"
-    assert header.review_reasons == ("price_not_found",)
+    (candidate,) = extract_candidates(result)
     assert candidate.name == "牛乳"
     assert candidate.needs_review
 
@@ -198,11 +236,11 @@ def test_first_item_with_quantity_price_on_next_line_is_kept() -> None:
     ("texts", "expected_names", "unpriced_count"),
     [
         (["牛乳", "食パン 198", "合計 398"], ["牛乳", "食パン"], 1),
-        (["架空店", "牛乳", "パン 100", "合計 298"], ["架空店", "牛乳", "パン"], 2),
+        (["架空店", "牛乳", "パン 100", "合計 298"], ["牛乳", "パン"], 1),
         (
             ["架空店", "牛乳", "食パン", "2コ×単100 ¥200", "合計 ¥200"],
-            ["架空店", "牛乳", "食パン"],
-            3,
+            ["牛乳", "食パン"],
+            2,
         ),
     ],
 )
@@ -222,7 +260,16 @@ def test_unpriced_leading_lines_are_retained_for_review(
 
 @pytest.mark.parametrize(
     "total",
-    ["合計 448", "合 計 ４４８円", "小計 ¥448", "総計￥448", "割引前合計 ¥448", "合計: 448"],
+    [
+        "合計 448",
+        "合 計 ４４８円",
+        "小計 ¥448",
+        "総計￥448",
+        "割引前合計 ¥448",
+        "合計: 448",
+        "合計/20点 ¥4,810",
+        "合計/25点 ￥5,449",
+    ],
 )
 def test_total_requires_a_complete_label_and_amount(total: str) -> None:
     blocks = (
