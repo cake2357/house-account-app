@@ -202,6 +202,7 @@ def test_store_tag_management_and_receipt_wide_assignment(app_url: str, fixture_
         expect(store_picker).to_have_value(store_tag_id)
         expect(page.locator(".item-card .store-tag-chip")).to_have_count(2)
 
+        page.locator(".store-tag-management > summary").click()
         page.locator("#manage-store-tag").select_option(label="青果店")
         page.get_by_label("新しい名前").fill("青果市場")
         page.get_by_role("button", name="改名").click()
