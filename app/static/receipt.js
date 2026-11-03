@@ -21,8 +21,12 @@
 
   function setDirty(value = true) {
     dirty = value;
-    saveIndicator.textContent = dirty ? "未保存" : "保存済み";
+    if (dirty) saveIndicator.textContent = "未保存";
     saveIndicator.classList.toggle("is-dirty", dirty);
+  }
+
+  function saveSuccessLabel(status) {
+    return status === "confirmed" ? "確認して保存しました" : "下書きを保存しました";
   }
 
   function updateSavingControls() {
@@ -206,6 +210,14 @@
     search.setAttribute("aria-label", "タグを検索");
     const options = document.createElement("div");
     options.className = "tag-options";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "button button-secondary button-small close-tag-picker";
+    close.textContent = "閉じる";
+    close.addEventListener("click", () => {
+      picker.open = false;
+      summary.focus();
+    });
     const create = document.createElement("button");
     create.type = "button";
     create.className = "button button-secondary button-small create-tag";
@@ -245,7 +257,7 @@
         saveError.textContent = error.message;
       });
     });
-    menu.append(search, options, create);
+    menu.append(search, options, create, close);
     picker.append(summary, menu);
     tagBar.append(chips, picker);
     const itemError = document.createElement("p");
@@ -385,6 +397,7 @@
         row.dataset.itemId = result.items[index].id;
       });
       setDirty(false);
+      saveIndicator.textContent = saveSuccessLabel(status);
     } catch (error) {
       if (error.code === "revision_conflict") {
         saveError.textContent = "別の画面で更新されています。入力を保持しました。別タブを閉じ、内容をコピーしてから再読み込みしてください。";
@@ -503,6 +516,7 @@
     }
     initialized = true;
     setDirty(false);
+    saveIndicator.textContent = saveSuccessLabel(detail.status);
     updateSavingControls();
   }
 

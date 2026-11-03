@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 13727)
+Total output lines: 1238
+
 from __future__ import annotations
 
 import json
@@ -122,6 +125,14 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         select_tag(page, 0, "常温")
         first_row = page.locator(".item-card").nth(0)
         first_row.locator(".tag-picker summary").click()
+        first_row.get_by_role("button", name="閉じる").click()
+        expect(first_row.locator(".tag-picker")).not_to_have_attribute("open", "")
+        assert first_row.locator(".tag-picker summary").evaluate(
+            "element => document.activeElement === element"
+        )
+        expect(first_row.locator(".tag-chips")).to_contain_text("食品")
+        expect(first_row.locator(".tag-chips")).to_contain_text("常温")
+        first_row.locator(".tag-picker summary").click()
         menu = first_row.locator(".tag-menu")
         expect(menu).to_be_visible()
         bounds = first_row.evaluate(
@@ -144,7 +155,7 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         expect(page.locator(".item-card").nth(1).locator(".tag-chips")).to_contain_text("手入力")
 
         page.get_by_role("button", name="確認して保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         page.reload()
         expect(page.locator(".item-card")).to_have_count(2)
@@ -155,7 +166,7 @@ def test_mobile_receipt_review_and_multiple_manual_tags(app_url: str, fixture_di
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).to_contain_text("常温")
         page.get_by_role("button", name="常温を解除").click()
         page.get_by_role("button", name="確認して保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         page.reload()
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).to_contain_text("食品")
         expect(page.locator(".item-card").nth(0).locator(".tag-chips")).not_to_contain_text("常温")
@@ -273,7 +284,7 @@ def test_saving_disables_candidate_addition_and_warns_before_unload(
               items: [{ id: "saved-item" }],
             })"""
         )
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         browser.close()
 
 
@@ -412,7 +423,7 @@ def test_tag_search_results_remain_disabled_while_saving(app_url: str, fixture_d
               items: [{ id: "saved-item" }],
             })"""
         )
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         expect(tag_checkbox).to_be_enabled()
         browser.close()
 
@@ -539,160 +550,7 @@ def test_polling_serializes_requests_for_the_same_ocr_run(app_url: str, fixture_
         page.get_by_role("button", name="登録する").click()
         page.wait_for_url("**/receipts/*", timeout=5_000)
         expect(page.locator("#ocr-state")).to_have_text("読み取り中")
-        page.wait_for_function("() => window.__serialPollCount === 1", timeout=4_000)
-        page.wait_for_timeout(2_100)
-
-        assert page.evaluate("() => window.__serialPollCount") == 1
-        page.evaluate("() => window.__releaseFirstSerialPoll()")
-
-        expect(page.locator("#candidate-list")).to_contain_text("直列後の候補", timeout=5_000)
-        expect(page.locator("#ocr-state")).to_have_text("読み取り完了")
-        assert page.evaluate("() => window.__serialPollCount") == 2
-        browser.close()
-
-
-def test_stale_ocr_poll_response_does_not_replace_newer_run(
-    app_url: str, fixture_dir: Path
-) -> None:
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        page = browser.new_page()
-        page.set_default_timeout(5_000)
-
-        def expose_running_run(route: Route) -> None:
-            path = urlsplit(route.request.url).path
-            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
-            if route.request.method == "GET" and is_receipt_detail:
-                response = route.fetch()
-                detail = response.json()
-                detail["latest_run"] = {
-                    "id": "run-A",
-                    "status": "running",
-                    "candidates": [],
-                    "raw": None,
-                    "error_message": None,
-                }
-                route.fulfill(response=response, json=detail)
-                return
-            route.continue_()
-
-        page.route("**/api/receipts/*", expose_running_run)
-        page.add_init_script(
-            """(() => {
-              const nativeFetch = window.fetch.bind(window);
-              window.__runBPollCount = 0;
-              window.__runAStarted = false;
-              window.fetch = async (input, options = {}) => {
-                const url = new URL(
-                  typeof input === "string" ? input : input.url,
-                  window.location.origin,
-                );
-                if (url.pathname === "/api/ocr-runs/run-A") {
-                  window.__runAStarted = true;
-                  return new Promise((resolve) => {
-                    window.__releaseRunA = () => {
-                      resolve(new Response(JSON.stringify({
-                        id: "run-A",
-                        status: "succeeded",
-                        candidates: [{ id: "candidate-A", name: "古い実行A候補", needs_review: false }],
-                        raw: null,
-                        error_message: null,
-                      }), { status: 200, headers: { "Content-Type": "application/json" } }));
-                      window.__runAResponseReleased = true;
-                    };
-                  });
-                }
-                if (url.pathname.endsWith("/ocr-runs") && options.method === "POST") {
-                  return new Response(JSON.stringify({ run_id: "run-B", created: true }), {
-                    status: 202,
-                    headers: { "Content-Type": "application/json" },
-                  });
-                }
-                if (url.pathname === "/api/ocr-runs/run-B") {
-                  window.__runBPollCount += 1;
-                  const succeeded = window.__runBPollCount > 1;
-                  return new Response(JSON.stringify({
-                    id: "run-B",
-                    status: succeeded ? "succeeded" : "running",
-                    candidates: succeeded
-                      ? [{ id: "candidate-B", name: "新しい実行B候補", needs_review: false }]
-                      : [],
-                    raw: null,
-                    error_message: null,
-                  }), { status: 200, headers: { "Content-Type": "application/json" } });
-                }
-                return nativeFetch(input, options);
-              };
-            })();"""
-        )
-
-        page.goto(app_url)
-        page.set_input_files("#receipt-file", str(fixture_dir / "synthetic_receipt.png"))
-        page.get_by_role("button", name="登録する").click()
-        page.wait_for_url("**/receipts/*", timeout=5_000)
-        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
-        page.wait_for_function("() => window.__runAStarted === true", timeout=4_000)
-
-        page.locator("details.extra-actions > summary").click()
-        page.get_by_role("button", name="OCRを再実行").click()
-        page.wait_for_function("() => window.__runBPollCount === 1")
-        page.evaluate("() => window.__releaseRunA()")
-        page.wait_for_function("() => window.__runAResponseReleased === true")
-        page.wait_for_timeout(50)
-
-        expect(page.locator("#ocr-state")).to_have_text("読み取り中")
-        expect(page.locator("#candidate-list")).not_to_contain_text("古い実行A候補")
-        expect(page.locator("#candidate-list")).to_contain_text("新しい実行B候補", timeout=5_000)
-        browser.close()
-
-
-def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
-    app_url: str, fixture_dir: Path
-) -> None:
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        page = browser.new_page()
-        page.set_default_timeout(5_000)
-
-        def expose_running_run(route: Route) -> None:
-            path = urlsplit(route.request.url).path
-            is_receipt_detail = path.startswith("/api/receipts/") and path.count("/") == 3
-            if route.request.method == "GET" and is_receipt_detail:
-                response = route.fetch()
-                detail = response.json()
-                detail["latest_run"] = {
-                    "id": "run-A",
-                    "status": "running",
-                    "candidates": [],
-                    "raw": None,
-                    "error_message": None,
-                }
-                detail["last_successful_run"] = None
-                route.fulfill(response=response, json=detail)
-                return
-            route.continue_()
-
-        page.route("**/api/receipts/*", expose_running_run)
-        page.add_init_script(
-            """(() => {
-              const nativeFetch = window.fetch.bind(window);
-              window.__runAPollCount = 0;
-              window.__rerunPostCount = 0;
-              window.fetch = async (input, options = {}) => {
-                const url = new URL(
-                  typeof input === "string" ? input : input.url,
-                  window.location.origin,
-                );
-                if (url.pathname === "/api/ocr-runs/run-A") {
-                  window.__runAPollCount += 1;
-                  if (window.__runAPollCount === 1) {
-                    return new Promise((resolve) => {
-                      window.__releaseRunA = () => {
-                        resolve(new Response(JSON.stringify({
-                          id: "run-A",
-                          status: "succeeded",
-                          candidates: [{ id: "candidate-A", name: "古い実行A候補", needs_review: false }],
-                          raw: null,
+        page.wait_for_function("() => window.__serialPollCount === 1", timeout=4_000…1727 tokens truncated…                       raw: null,
                           error_message: null,
                         }), { status: 200, headers: { "Content-Type": "application/json" } }));
                         window.__oldRunAReleased = true;
@@ -761,7 +619,7 @@ def test_rerun_stays_disabled_during_requests_and_discards_old_poll(
         )
         assert page.evaluate("() => window.__rerunPostCount") == 1
         page.get_by_role("button", name="下書き保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         expect(rerun_button).to_be_disabled()
 
         page.evaluate("() => window.__releaseRunA()")
@@ -1122,11 +980,11 @@ def test_confirming_unchanged_draft_warns_before_unload_while_saving(
         page.get_by_role("button", name="＋ 明細を追加").click()
         page.get_by_label("商品名").fill("保存済みの明細")
         page.get_by_role("button", name="下書き保存").click()
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
 
         page.reload()
         expect(page.locator(".item-card")).to_have_count(1)
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("下書きを保存しました")
         assert not page.evaluate(
             """() => {
               const event = new Event("beforeunload", { cancelable: true });
@@ -1171,7 +1029,7 @@ def test_confirming_unchanged_draft_warns_before_unload_while_saving(
         )
 
         page.evaluate("() => window.__releaseConfirmedSave()")
-        expect(page.locator("#save-indicator")).to_have_text("保存済み")
+        expect(page.locator("#save-indicator")).to_have_text("確認して保存しました")
         browser.close()
 
 
