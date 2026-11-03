@@ -25,15 +25,30 @@ DATE_OR_PHONE = re.compile(
     re.IGNORECASE,
 )
 HEADER = re.compile(r"(?:お知らせ|広告|キャンペーン).*")
-TOTAL_LINE = re.compile(r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)\s*[:：]?\s*" + PRICE.pattern)
+TOTAL_LINE = re.compile(
+    r"(?:割引前)?(?:小\s*計|合\s*計|総\s*計)(?:[/／]\s*\d+\s*(?:点|個)?)?\s*[:：]?\s*"
+    + PRICE.pattern
+)
 TOTAL_AMOUNT_LINE = re.compile(
     r"(?:合\s*計|総\s*計|総額|お買上(?:げ)?(?:合計|計)|お買い上げ(?:合計|計)|"
-    r"税込合計|ご請求額|請求金額|お?支払(?:い)?(?:合計|金額))\s*[:：]?\s*" + PRICE.pattern,
+    r"税込合計|ご請求額|請求金額|お?支払(?:い)?(?:合計|金額))"
+    r"(?:[/／]\s*\d+\s*(?:点|個)?)?\s*[:：]?\s*" + PRICE.pattern,
     re.IGNORECASE,
 )
 QUANTITY = re.compile(r"\d+\s*(?:コ|個|点|本|枚)?\s*[×xX]\s*(?:単|@)?\s*[\d,.]+")
 ADJUSTMENT = re.compile(r"[*\s]*(?:[値值]引額|[値值]引|割引額|[値值]引合計)[*\s]*")
 AUXILIARY = re.compile(r"(?:商品代金|[値值]引合計|税率\s*\d+\s*%\s*[対对]象)")
+SUPPLEMENTAL_METADATA = re.compile(
+    r"(?:.*(?:事業者番号|登録番号|営業時間|住所|スキャン(?:No|番号)|"
+    r"(?:ス|レジ|レト|キレ)\s*N?o?\s*\d+).*)|"
+    r"(?:.*店$)|"
+    r"(?:.*(?:会員で現金|本体価格の|\d+\s*%相当|食料品は$).*)|"
+    r"(?i:.*(?:everyday low price|low price|high quality).*)|"
+    r"(?i:(?:ok|low|price))|"
+    r"(?:^(?:東京都|北海道|大阪府|神奈川県|[一-龯]+[市区町村]).*(?:\d|丁目|番地|号).*)|"
+    r"(?:.*電話\s*[:：]?\s*0\d{1,4}[-ー]\d{1,4}[-ー]\d{3,4}.*)|"
+    r"(?:(?:小\s*計|合\s*計).*税.*|消費税.*|税額.*)"
+)
 
 
 def split_price(text: str) -> tuple[str, bool]:
@@ -113,6 +128,7 @@ def extract_candidates(result: OcrResult) -> tuple[Candidate, ...]:
         if (
             not text
             or METADATA.fullmatch(text)
+            or SUPPLEMENTAL_METADATA.fullmatch(text)
             or DATE_OR_PHONE.fullmatch(text)
             or HEADER.fullmatch(text)
             or PRICE.fullmatch(text)

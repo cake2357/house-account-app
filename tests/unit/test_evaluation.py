@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PIL import Image, ImageChops, ImageOps
 
 from house_account.config import Settings
 from house_account.ocr.engine import PaddleOcrEngine
 from house_account.ocr.evaluation import (
+    _prepare_evaluation_input,
     recognize_for_evaluation,
     score_review,
     score_review_to_file,
@@ -80,6 +82,29 @@ def test_incomplete_sample_is_not_accepted(tmp_path: Path) -> None:
     assert result["precision"] == 1
     assert not result["sufficient_sample"]
     assert not result["accepted"]
+
+
+def test_evaluation_png_modes_preserve_or_adjust_pixels_as_requested(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    image = Image.new("RGB", (5, 1))
+    image.putdata(
+        [(50, 50, 50), (100, 100, 100), (150, 150, 150), (200, 200, 200), (255, 255, 255)]
+    )
+    image.save(source)
+
+    png_path = _prepare_evaluation_input(source, "png", tmp_path / "lossless.png")
+    with Image.open(png_path) as png:
+        assert png.format == "PNG"
+        assert ImageChops.difference(png, image).getbbox() is None
+
+    gray_path = _prepare_evaluation_input(source, "grayscale_autocontrast", tmp_path / "gray.png")
+    with Image.open(gray_path) as gray:
+        assert gray.format == "PNG"
+        assert gray.mode == "L"
+        expected = ImageOps.autocontrast(image.convert("L"))
+        assert ImageChops.difference(gray, expected).getbbox() is None
+        expected.close()
+    image.close()
 
 
 @pytest.mark.parametrize("candidate_id", ["0", "not-an-id"])
